@@ -24,7 +24,6 @@ package partition
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"slices"
 
@@ -47,10 +46,6 @@ var (
 	IsolationLeakCauseNoRecentPollers = metrics.IsolationLeakCause("no_recent_pollers")
 	IsolationLeakCauseExpired         = metrics.IsolationLeakCause("expired")
 )
-
-// ErrInvalidPartitionConfig is returned when the required partitioning configuration
-// is missing due to misconfiguration
-var ErrInvalidPartitionConfig = errors.New("invalid partition config")
 
 // DefaultWorkflowPartitionConfig Is the default dataset expected to be passed around in the
 // execution records for workflows which is used for partitioning. It contains the IsolationGroup
@@ -80,11 +75,11 @@ func NewDefaultPartitioner(
 
 func (r *defaultPartitioner) GetIsolationGroupByDomainID(ctx context.Context, scope metrics.Scope, pollerInfo PollerInfo, wfPartitionData PartitionConfig) (string, error) {
 	if wfPartitionData == nil {
-		return "", ErrInvalidPartitionConfig
+		return "", nil
 	}
 	wfPartition := mapPartitionConfigToDefaultPartitionConfig(wfPartitionData)
 	if wfPartition.WorkflowStartIsolationGroup == "" || wfPartition.WFID == "" {
-		return "", ErrInvalidPartitionConfig
+		return "", nil
 	}
 
 	isolationGroups, err := r.isolationGroupState.IsolationGroupsByDomainID(ctx, pollerInfo.DomainID)
