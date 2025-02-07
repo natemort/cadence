@@ -213,8 +213,8 @@ func (s *MatchingSimulationSuite) TestMatchingSimulation() {
 			TaskList:     &types.TaskList{Name: tasklist, Kind: types.TaskListKindNormal.Ptr()},
 			TaskListType: types.TaskListTypeDecision.Ptr(),
 			PartitionConfig: &types.TaskListPartitionConfig{
-				NumReadPartitions:  int32(getPartitions(s.TestClusterConfig.MatchingConfig.SimulationConfig.TaskListReadPartitions)),
-				NumWritePartitions: int32(getPartitions(s.TestClusterConfig.MatchingConfig.SimulationConfig.TaskListWritePartitions)),
+				ReadPartitions:  getPartitions(s.TestClusterConfig.MatchingConfig.SimulationConfig.TaskListReadPartitions),
+				WritePartitions: getPartitions(s.TestClusterConfig.MatchingConfig.SimulationConfig.TaskListWritePartitions),
 			},
 		})
 		s.NoError(err)
@@ -600,11 +600,17 @@ func getTaskIsolationGroups(c host.SimulationTaskConfiguration) []string {
 	return c.IsolationGroups
 }
 
-func getPartitions(i int) int {
+func getPartitions(i int) map[int]*types.TaskListPartition {
 	if i == 0 {
-		return 1
+		return map[int]*types.TaskListPartition{
+			0: {},
+		}
 	}
-	return i
+	result := make(map[int]*types.TaskListPartition)
+	for j := 0; j < i; j++ {
+		result[j] = &types.TaskListPartition{}
+	}
+	return result
 }
 
 func getForwarderMaxOutstandingPolls(i int) int {
