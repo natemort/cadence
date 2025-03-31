@@ -20,28 +20,19 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 
-package partition
-
-//go:generate mockgen -package $GOPACKAGE -source $GOFILE -destination partitioning_mock.go -self_package github.com/uber/cadence/common/partition
+package isolationgroup
 
 import (
 	"context"
+	"testing"
 
-	"github.com/uber/cadence/common/metrics"
+	"github.com/stretchr/testify/assert"
 )
 
-// PollerInfo captures relevant information from the poller side
-type PollerInfo struct {
-	DomainID     string
-	TasklistName string
-	// The isolation groups that are known to have pollers in them and are able to receive tasks
-	// for this domain and tasklist.
-	AvailableIsolationGroups []string
-}
+func TestContext(t *testing.T) {
+	partitionConfig := map[string]string{"test": "abc"}
+	assert.Equal(t, partitionConfig, ConfigFromContext(ContextWithConfig(context.Background(), partitionConfig)))
 
-type Partitioner interface {
-	// GetIsolationGroupByDomainID gets where the task workflow should be executing. Largely used by Matching
-	// when determining which isolationGroup to place the tasks in.
-	// Implementations ought to return (nil, nil) for when the feature is not enabled.
-	GetIsolationGroupByDomainID(ctx context.Context, scope metrics.Scope, pollerinfo PollerInfo, partitionKey PartitionConfig) (string, error)
+	isolationGroup := "zone1"
+	assert.Equal(t, isolationGroup, IsolationGroupFromContext(ContextWithIsolationGroup(context.Background(), isolationGroup)))
 }

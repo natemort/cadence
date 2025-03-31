@@ -28,12 +28,10 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
-	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	"golang.org/x/exp/maps"
 	"golang.org/x/sync/errgroup"
 
 	"github.com/uber/cadence/client/history"
@@ -44,11 +42,11 @@ import (
 	"github.com/uber/cadence/common/clock"
 	"github.com/uber/cadence/common/cluster"
 	"github.com/uber/cadence/common/constants"
+	"github.com/uber/cadence/common/isolationgroup"
 	"github.com/uber/cadence/common/log"
 	"github.com/uber/cadence/common/log/tag"
 	"github.com/uber/cadence/common/messaging"
 	"github.com/uber/cadence/common/metrics"
-	"github.com/uber/cadence/common/partition"
 	"github.com/uber/cadence/common/persistence"
 	"github.com/uber/cadence/common/stats"
 	"github.com/uber/cadence/common/types"
@@ -68,11 +66,14 @@ const (
 
 var (
 	// ErrNoTasks is exported temporarily for integration test
-	ErrNoTasks                      = errors.New("no tasks")
-	_stickyPollerUnavailableError   = &types.StickyWorkerUnavailableError{Message: "sticky worker is unavailable, please use non-sticky task list."}
-	persistenceOperationRetryPolicy = common.CreatePersistenceRetryPolicy()
-	taskListActivityTypeTag         = metrics.TaskListTypeTag("activity")
-	taskListDecisionTypeTag         = metrics.TaskListTypeTag("decision")
+	ErrNoTasks                        = errors.New("no tasks")
+	persistenceOperationRetryPolicy   = common.CreatePersistenceRetryPolicy()
+	taskListActivityTypeTag           = metrics.TaskListTypeTag("activity")
+	taskListDecisionTypeTag           = metrics.TaskListTypeTag("decision")
+	IsolationLeakCauseError           = metrics.IsolationLeakCause("error")
+	IsolationLeakCauseGroupDrained    = metrics.IsolationLeakCause("group_drained")
+	IsolationLeakCauseNoRecentPollers = metrics.IsolationLeakCause("no_recent_pollers")
+	IsolationLeakCauseExpired         = metrics.IsolationLeakCause("expired")
 )
 
 type (
@@ -108,7 +109,7 @@ type (
 		matcher         TaskMatcher          // for matching a task producer with a poller
 		clusterMetadata cluster.Metadata
 		domainCache     cache.DomainCache
-		partitioner     partition.Partitioner
+		isolationState  isolationgroup.State
 		logger          log.Logger
 		scope           metrics.Scope
 		timeSource      clock.TimeSource
@@ -153,7 +154,7 @@ func NewManager(
 	metricsClient metrics.Client,
 	taskManager persistence.TaskManager,
 	clusterMetadata cluster.Metadata,
-	partitioner partition.Partitioner,
+	isolationState isolationgroup.State,
 	matchingClient matching.Client,
 	closeCallback func(Manager),
 	taskList *Identifier,
@@ -184,7 +185,7 @@ func NewManager(
 		enableIsolation:     taskListConfig.EnableTasklistIsolation(),
 		domainCache:         domainCache,
 		clusterMetadata:     clusterMetadata,
-		partitioner:         partitioner,
+		isolationState:      isolationState,
 		taskListID:          taskList,
 		taskListKind:        *taskListKind,
 		logger:              logger.WithTags(tag.WorkflowDomainName(domainName), tag.WorkflowTaskListName(taskList.GetName()), tag.WorkflowTaskListType(taskList.GetType())),
@@ -517,7 +518,7 @@ func (c *taskListManagerImpl) AddTask(ctx context.Context, params AddTaskParams)
 	if params.ForwardedFrom == "" {
 		// request sent by history service
 		c.liveness.MarkAlive()
-		if isolationGroup, ok := params.TaskInfo.PartitionConfig[partition.IsolationGroupKey]; ok {
+		if isolationGroup, ok := params.TaskInfo.PartitionConfig[isolationgroup.GroupKey]; ok {
 			c.qpsTracker.ReportGroup(isolationGroup, 1)
 		} else {
 			c.qpsTracker.ReportCounter(1)
@@ -554,10 +555,7 @@ func (c *taskListManagerImpl) AddTask(ctx context.Context, params AddTaskParams)
 			return r, err
 		}
 
-		isolationGroup, _, err := c.getIsolationGroupForTask(ctx, params.TaskInfo)
-		if err != nil {
-			return false, err
-		}
+		isolationGroup, _ := c.getIsolationGroupForTask(ctx, params.TaskInfo)
 		// active task, try sync match first
 		syncMatch, err = c.trySyncMatch(ctx, params, isolationGroup)
 		if syncMatch {
@@ -891,53 +889,48 @@ func (c *taskListManagerImpl) shouldReload() bool {
 	return c.config.EnableTasklistIsolation() != c.enableIsolation
 }
 
-func (c *taskListManagerImpl) getIsolationGroupForTask(ctx context.Context, taskInfo *persistence.TaskInfo) (string, time.Duration, error) {
-	if c.enableIsolation && len(taskInfo.PartitionConfig) > 0 && c.taskListKind != types.TaskListKindSticky {
-		partitionConfig := make(map[string]string)
-		for k, v := range taskInfo.PartitionConfig {
-			partitionConfig[k] = v
-		}
-		startedIsolationGroup := partitionConfig[partition.IsolationGroupKey]
-		partitionConfig[partition.WorkflowIDKey] = taskInfo.WorkflowID
-		pollerIsolationGroups := c.getPollerIsolationGroups()
-
-		group, err := c.partitioner.GetIsolationGroupByDomainID(ctx,
-			c.scope,
-			partition.PollerInfo{
-				DomainID:                 taskInfo.DomainID,
-				TasklistName:             c.taskListID.name,
-				AvailableIsolationGroups: pollerIsolationGroups,
-			}, partitionConfig)
-		if err != nil {
-			// if we're unable to get the isolation group, log the error and fallback to no isolation
-			c.logger.Error("Failed to get isolation group from partition library", tag.IsolationGroup(startedIsolationGroup), tag.WorkflowID(taskInfo.WorkflowID), tag.WorkflowRunID(taskInfo.RunID), tag.TaskID(taskInfo.TaskID), tag.Error(err))
-			c.scope.Tagged(metrics.IsolationGroupTag(startedIsolationGroup), partition.IsolationLeakCauseError).IncCounter(metrics.TaskIsolationLeakPerTaskList)
-			return defaultTaskBufferIsolationGroup, noIsolationTimeout, nil
-		}
-
-		totalTaskIsolationDuration := c.config.TaskIsolationDuration()
-		taskIsolationDuration := noIsolationTimeout
-		if totalTaskIsolationDuration != noIsolationTimeout && group != defaultTaskBufferIsolationGroup {
-			taskLatency := c.timeSource.Now().Sub(taskInfo.CreatedTime)
-			if taskLatency < (totalTaskIsolationDuration - minimumIsolationDuration) {
-				taskIsolationDuration = totalTaskIsolationDuration - taskLatency
-			} else {
-				c.logger.Info("Leaking task due to taskIsolationDuration expired", tag.IsolationGroup(group), tag.IsolationDuration(taskIsolationDuration), tag.TaskLatency(taskLatency))
-				c.scope.Tagged(metrics.IsolationGroupTag(startedIsolationGroup), partition.IsolationLeakCauseExpired).IncCounter(metrics.TaskIsolationLeakPerTaskList)
-				group = defaultTaskBufferIsolationGroup
-			}
-		}
-		c.logger.Debug("get isolation group", tag.PollerGroups(pollerIsolationGroups), tag.IsolationGroup(group), tag.PartitionConfig(partitionConfig))
-		return group, taskIsolationDuration, nil
+func (c *taskListManagerImpl) getIsolationGroupForTask(ctx context.Context, taskInfo *persistence.TaskInfo) (string, time.Duration) {
+	if !c.enableIsolation || len(taskInfo.PartitionConfig) == 0 || c.taskListKind == types.TaskListKindSticky {
+		return defaultTaskBufferIsolationGroup, noIsolationTimeout
 	}
-	return defaultTaskBufferIsolationGroup, noIsolationTimeout, nil
-}
+	group := taskInfo.PartitionConfig[isolationgroup.GroupKey]
 
-func (c *taskListManagerImpl) getPollerIsolationGroups() []string {
-	groupSet := c.getRecentPollersByIsolationGroup()
-	result := maps.Keys(groupSet)
-	sort.Strings(result)
-	return result
+	if group == defaultTaskBufferIsolationGroup {
+		return defaultTaskBufferIsolationGroup, noIsolationTimeout
+	}
+
+	isDrained, err := c.isolationState.IsDrained(ctx, c.domainName, group)
+	if err != nil {
+		// if we're unable to get the isolation group, log the error and fallback to no isolation
+		c.logger.Error("Failed to determine whether isolation group is drained", tag.IsolationGroup(group), tag.WorkflowID(taskInfo.WorkflowID), tag.WorkflowRunID(taskInfo.RunID), tag.TaskID(taskInfo.TaskID), tag.Error(err))
+		c.scope.Tagged(metrics.IsolationGroupTag(group), IsolationLeakCauseError).IncCounter(metrics.TaskIsolationLeakPerTaskList)
+		return defaultTaskBufferIsolationGroup, noIsolationTimeout
+	}
+	if isDrained {
+		c.scope.Tagged(metrics.IsolationGroupTag(group), IsolationLeakCauseGroupDrained).IncCounter(metrics.TaskIsolationLeakPerTaskList)
+		return defaultTaskBufferIsolationGroup, noIsolationTimeout
+	}
+
+	pollerCount := c.getRecentPollersByIsolationGroup()
+	if pollerCount[group] == 0 {
+		c.scope.Tagged(metrics.IsolationGroupTag(group), IsolationLeakCauseNoRecentPollers).IncCounter(metrics.TaskIsolationLeakPerTaskList)
+		return defaultTaskBufferIsolationGroup, noIsolationTimeout
+	}
+
+	totalTaskIsolationDuration := c.config.TaskIsolationDuration()
+	taskIsolationDuration := noIsolationTimeout
+	if totalTaskIsolationDuration != noIsolationTimeout {
+		taskLatency := c.timeSource.Now().Sub(taskInfo.CreatedTime)
+		if taskLatency < (totalTaskIsolationDuration - minimumIsolationDuration) {
+			taskIsolationDuration = totalTaskIsolationDuration - taskLatency
+		} else {
+			c.logger.Info("Leaking task due to taskIsolationDuration expired", tag.IsolationGroup(group), tag.IsolationDuration(taskIsolationDuration), tag.TaskLatency(taskLatency))
+			c.scope.Tagged(metrics.IsolationGroupTag(group), IsolationLeakCauseExpired).IncCounter(metrics.TaskIsolationLeakPerTaskList)
+			return defaultTaskBufferIsolationGroup, noIsolationTimeout
+		}
+	}
+	return group, taskIsolationDuration
+
 }
 
 func (c *taskListManagerImpl) getRecentPollersByIsolationGroup() map[string]int {

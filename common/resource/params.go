@@ -42,7 +42,6 @@ import (
 	"github.com/uber/cadence/common/membership"
 	"github.com/uber/cadence/common/messaging"
 	"github.com/uber/cadence/common/metrics"
-	"github.com/uber/cadence/common/partition"
 	persistenceClient "github.com/uber/cadence/common/persistence/client"
 	"github.com/uber/cadence/common/pinot"
 	"github.com/uber/cadence/common/rpc"
@@ -82,7 +81,6 @@ type (
 		AuthorizationConfig        config.Authorization     // NOTE: empty(default) struct will get a authorization.NoopAuthorizer
 		IsolationGroupStore        configstore.Client       // This can be nil, the default config store will be created if so
 		IsolationGroupState        isolationgroup.State     // This can be nil, the default state store will be chosen if so
-		Partitioner                partition.Partitioner
 		PinotConfig                *config.PinotVisibilityConfig
 		KafkaConfig                config.KafkaConfig
 		PinotClient                pinot.GenericClient

@@ -60,7 +60,7 @@ import (
 	"github.com/uber/cadence/common/clock"
 	"github.com/uber/cadence/common/constants"
 	"github.com/uber/cadence/common/dynamicconfig"
-	"github.com/uber/cadence/common/partition"
+	"github.com/uber/cadence/common/isolationgroup"
 	"github.com/uber/cadence/common/persistence"
 	pt "github.com/uber/cadence/common/persistence/persistence-tests"
 	"github.com/uber/cadence/common/types"
@@ -519,7 +519,7 @@ func newDecisionTask(domainID, tasklist, isolationGroup string, i int) *types.Ad
 		},
 		ScheduleID: int64(i),
 		PartitionConfig: map[string]string{
-			partition.IsolationGroupKey: isolationGroup,
+			isolationgroup.GroupKey: isolationGroup,
 		},
 	}
 }
