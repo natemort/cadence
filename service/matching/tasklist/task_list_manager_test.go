@@ -23,6 +23,7 @@ package tasklist
 import (
 	"context"
 	"errors"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -34,7 +35,6 @@ import (
 	"github.com/uber-go/tally"
 	"go.uber.org/goleak"
 	"go.uber.org/mock/gomock"
-	"golang.org/x/exp/maps"
 	"golang.org/x/sync/errgroup"
 
 	"github.com/uber/cadence/client/history"
@@ -286,6 +286,7 @@ func TestDescribeTaskList(t *testing.T) {
 			name: "no status, with pollers",
 			pollers: map[string]poller.Info{
 				"pollerID": {
+					Identity:       "pollerIdentity",
 					RatePerSecond:  1.0,
 					IsolationGroup: "a",
 				},
@@ -332,6 +333,7 @@ func TestDescribeTaskList(t *testing.T) {
 			includeStatus: true,
 			pollers: map[string]poller.Info{
 				"a-1": {
+					Identity:       "a1Identity",
 					RatePerSecond:  1.0,
 					IsolationGroup: "datacenterA",
 				},
@@ -373,10 +375,10 @@ func TestDescribeTaskList(t *testing.T) {
 
 			expectedPollers := make([]*types.PollerInfo, 0, len(tc.pollers))
 			for id, info := range tc.pollers {
-				tlm.pollerHistory.UpdatePollerInfo(poller.Identity(id), info)
+				tlm.pollers.StartPoll(id, func() {}, &info)
 				expectedPollers = append(expectedPollers, &types.PollerInfo{
 					LastAccessTime: common.Int64Ptr(tlm.timeSource.Now().UnixNano()),
-					Identity:       id,
+					Identity:       info.Identity,
 					RatePerSecond:  info.RatePerSecond,
 				})
 			}
@@ -512,53 +514,6 @@ func TestAddTaskStandby(t *testing.T) {
 	syncMatch, err = tlm.AddTask(context.Background(), addTaskParam)
 	require.Error(t, err) // should not persist the task
 	require.False(t, syncMatch)
-}
-
-func TestGetRecentPollersByIsolationGroup(t *testing.T) {
-	controller := gomock.NewController(t)
-	logger := testlogger.New(t)
-
-	config := defaultTestConfig()
-	mockClock := clock.NewMockedTimeSource()
-	config.LongPollExpirationInterval = dynamicconfig.GetDurationPropertyFnFilteredByTaskListInfo(30 * time.Second)
-	config.EnableTasklistIsolation = dynamicconfig.GetBoolPropertyFnFilteredByDomainID(true)
-	tlm := createTestTaskListManagerWithConfig(t, logger, controller, config, mockClock)
-
-	bgCtx := ContextWithPollerID(context.Background(), "poller0")
-	bgCtx = ContextWithIdentity(bgCtx, "id0")
-	bgCtx = ContextWithIsolationGroup(bgCtx, getIsolationgroupsHelper()[0])
-	ctx, cancel := context.WithTimeout(bgCtx, time.Millisecond)
-	_, err := tlm.GetTask(ctx, nil)
-	cancel()
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), ErrNoTasks.Error())
-
-	// we should get isolation groups that showed up within last isolationDuration
-	groups := maps.Keys(tlm.getRecentPollersByIsolationGroup())
-	assert.Equal(t, 1, len(groups))
-	assert.Equal(t, getIsolationgroupsHelper()[0], groups[0])
-
-	// after isolation duration, the poller from that isolation group are cleared from the poller history
-	mockClock.Advance((10 * time.Second) + time.Nanosecond)
-	groups = maps.Keys(tlm.getRecentPollersByIsolationGroup())
-	assert.Equal(t, 0, len(groups))
-
-	// we should get isolation groups of outstanding pollers
-	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		tlm.GetTask(ctx, nil)
-		cancel()
-	}()
-	awaitCondition(func() bool {
-		return len(maps.Keys(tlm.getRecentPollersByIsolationGroup())) > 0
-	}, time.Second)
-	groups = maps.Keys(tlm.getRecentPollersByIsolationGroup())
-	cancel()
-	wg.Wait()
-	assert.Equal(t, 1, len(groups))
-	assert.Equal(t, getIsolationgroupsHelper()[0], groups[0])
 }
 
 // return a client side tasklist throttle error from the rate limiter.
@@ -782,8 +737,8 @@ func TestGetIsolationGroupForTask(t *testing.T) {
 			}
 			tlm.isolationState = mockIsolationGroupState
 
-			for _, pollerGroup := range tc.recentPollers {
-				tlm.pollerHistory.UpdatePollerInfo(poller.Identity(pollerGroup), poller.Info{IsolationGroup: pollerGroup})
+			for i, pollerGroup := range tc.recentPollers {
+				tlm.pollers.StartPoll(strconv.Itoa(i), func() {}, &poller.Info{Identity: pollerGroup, IsolationGroup: pollerGroup})
 			}
 
 			taskInfo := &persistence.TaskInfo{
@@ -1204,13 +1159,13 @@ func TestTaskListManagerImpl_HasPollerAfter(t *testing.T) {
 	}{
 		"has_outstanding_pollers": {
 			prepareManager: func(tlm *taskListManagerImpl) {
-				tlm.addOutstandingPoller("poller1", "group1", func() {})
-				tlm.addOutstandingPoller("poller2", "group2", func() {})
+				tlm.pollers.StartPoll("poller1", func() {}, &poller.Info{Identity: "foo"})
 			},
 		},
 		"no_outstanding_pollers": {
 			prepareManager: func(tlm *taskListManagerImpl) {
-				tlm.pollerHistory.UpdatePollerInfo("identity", poller.Info{RatePerSecond: 1.0, IsolationGroup: "isolationGroup"})
+				tlm.pollers.StartPoll("poller1", func() {}, &poller.Info{Identity: "foo"})
+				tlm.pollers.EndPoll("poller1")
 			},
 		},
 	} {
