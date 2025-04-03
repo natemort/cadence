@@ -2629,6 +2629,7 @@ const (
 	RemoteToLocalMatchPerTaskListCounter
 	RemoteToRemoteMatchPerTaskListCounter
 	IsolationTaskMatchPerTaskListCounter
+	IsolationSuccessPerTaskListCounter
 	PollerPerTaskListCounter
 	PollerInvalidIsolationGroupCounter
 	TaskListPartitionUpdateFailedCounter
@@ -3341,6 +3342,7 @@ var MetricDefs = map[ServiceIdx]map[int]metricDefinition{
 		RemoteToLocalMatchPerTaskListCounter:                    {metricName: "remote_to_local_matches_per_tl", metricRollupName: "remote_to_local_matches"},
 		RemoteToRemoteMatchPerTaskListCounter:                   {metricName: "remote_to_remote_matches_per_tl", metricRollupName: "remote_to_remote_matches"},
 		IsolationTaskMatchPerTaskListCounter:                    {metricName: "isolation_task_matches_per_tl", metricType: Counter},
+		IsolationSuccessPerTaskListCounter:                      {metricName: "isolation_success_per_tl", metricRollupName: "isolation_success"},
 		PollerPerTaskListCounter:                                {metricName: "poller_count_per_tl", metricRollupName: "poller_count"},
 		PollerInvalidIsolationGroupCounter:                      {metricName: "poller_invalid_isolation_group_per_tl", metricType: Counter},
 		TaskListPartitionUpdateFailedCounter:                    {metricName: "tasklist_partition_update_failed_per_tl", metricType: Counter},
