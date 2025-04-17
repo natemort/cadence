@@ -203,7 +203,7 @@ func (tm *taskMatcherImpl) Offer(ctx context.Context, task *InternalTask) (bool,
 			e.EventName = "Attempting to Forward Task"
 			event.Log(e)
 			err := tm.fwdr.ForwardTask(ctx, task)
-			token.release("")
+			token.release()
 			if err == nil {
 				// task was remotely sync matched on the parent partition
 				tm.scope.RecordTimer(metrics.SyncMatchForwardPollLatencyPerTaskList, time.Since(startT))
@@ -265,7 +265,7 @@ func (tm *taskMatcherImpl) OfferQuery(ctx context.Context, task *InternalTask) (
 			return nil, nil
 		case token := <-fwdrTokenC:
 			resp, err := tm.fwdr.ForwardQueryTask(ctx, task)
-			token.release("")
+			token.release()
 			if err == nil {
 				return resp, nil
 			}
@@ -341,7 +341,7 @@ forLoop:
 			event.Log(e)
 			childCtx, cancel := context.WithTimeout(ctx, time.Second*2)
 			err := tm.fwdr.ForwardTask(childCtx, task)
-			token.release("")
+			token.release()
 			if err != nil {
 				if errors.Is(err, ErrForwarderSlowDown) {
 					tm.scope.IncCounter(metrics.AsyncMatchForwardTaskThrottleErrorPerTasklist)
@@ -543,7 +543,7 @@ func (tm *taskMatcherImpl) pollOrForward(
 			EventName:    "Poll Timeout",
 		})
 		return nil, ErrNoTasks
-	case token := <-tm.fwdrPollReqTokenC(isolationGroup):
+	case token := <-tm.fwdrPollReqTokenC():
 		event.Log(event.E{
 			TaskListName: tm.tasklist.GetName(),
 			TaskListType: tm.tasklist.GetType(),
@@ -554,7 +554,7 @@ func (tm *taskMatcherImpl) pollOrForward(
 			},
 		})
 		if task, err := tm.fwdr.ForwardPoll(ctx); err == nil {
-			token.release(isolationGroup)
+			token.release()
 			tm.scope.RecordTimer(metrics.PollForwardMatchLatencyPerTaskList, time.Since(startT))
 			event.Log(event.E{
 				TaskListName: tm.tasklist.GetName(),
@@ -564,7 +564,7 @@ func (tm *taskMatcherImpl) pollOrForward(
 			})
 			return task, nil
 		}
-		token.release(isolationGroup)
+		token.release()
 		return tm.poll(ctx, startT, isolatedTaskC, taskC, queryTaskC)
 	}
 }
@@ -759,11 +759,11 @@ func (tm *taskMatcherImpl) pollNonBlocking(
 	}
 }
 
-func (tm *taskMatcherImpl) fwdrPollReqTokenC(isolationGroup string) <-chan *ForwarderReqToken {
+func (tm *taskMatcherImpl) fwdrPollReqTokenC() <-chan *ForwarderReqToken {
 	if tm.fwdr == nil {
 		return noopForwarderTokenC
 	}
-	return tm.fwdr.PollReqTokenC(isolationGroup)
+	return tm.fwdr.PollReqTokenC()
 }
 
 func (tm *taskMatcherImpl) fwdrAddReqTokenC() <-chan *ForwarderReqToken {

@@ -225,7 +225,7 @@ func NewManager(
 	}
 	var fwdr Forwarder
 	if tlMgr.isFowardingAllowed(taskList, *taskListKind) {
-		fwdr = newForwarder(&taskListConfig.ForwarderConfig, taskList, *taskListKind, matchingClient, isolationGroups, scope)
+		fwdr = newForwarder(&taskListConfig.ForwarderConfig, taskList, *taskListKind, matchingClient, scope)
 	}
 	numReadPartitionsFn := func(cfg *config.TaskListConfig) int {
 		if cfg.EnableGetNumberOfPartitionsFromCache() {
