@@ -1104,6 +1104,9 @@ func newTaskListConfig(id *Identifier, cfg *config.Config, domainName string) *c
 		EnableAdaptiveScaler: func() bool {
 			return cfg.EnableAdaptiveScaler(domainName, taskListName, taskType)
 		},
+		EnablePartitionEmptyCheck: func() bool {
+			return cfg.EnablePartitionEmptyCheck(domainName, taskListName, taskType)
+		},
 		TaskIsolationDuration: func() time.Duration {
 			return cfg.TaskIsolationDuration(domainName, taskListName, taskType)
 		},
