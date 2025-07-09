@@ -154,10 +154,7 @@ func NewWorkflowHandler(
 
 // Start starts the handler
 func (wh *WorkflowHandler) Start() {
-	// TODO: Get warmup duration from config. Even better, run proactive checks such as probing downstream connections.
-	const warmUpDuration = 30 * time.Second
-
-	warmupTimer := time.NewTimer(warmUpDuration)
+	warmupTimer := time.NewTimer(wh.config.WarmupDuration())
 	go func() {
 		<-warmupTimer.C
 		wh.GetLogger().Warn("Service warmup duration has elapsed.")
