@@ -3295,6 +3295,17 @@ const (
 	// Allowed filters: ShardID
 	HistoryTaskDLQProcessorInterval
 
+	// MatchingRecordTaskStartedTimeout is the request timeout for RecordActivityTaskStarted and RecordDecisionTaskStarted
+	// Any time we spend attempting to start an individual task is blocking that poller from starting a different task.
+	// If a task is taking too long we'd rather try other tasks to maintain higher throughput.
+	// At the same time, workflows with incredibly high contention will take longer to update. To avoid noise from
+	// expected failures we can adjust the value per domain.
+	// KeyName: matching.recordTaskStartedTimeout
+	// Value type: Duration
+	// Default value: 1s
+	// Allowed filters: Domain
+	MatchingRecordTaskStartedTimeout
+
 	// LastDurationKey must be the last one in this const group
 	LastDurationKey
 )
@@ -5940,6 +5951,12 @@ var DurationKeys = map[DurationKey]DynamicDuration{
 		Filters:      []Filter{ShardID},
 		Description:  "HistoryTaskDLQProcessorInterval is the interval for background processing of the History Task DLQ",
 		DefaultValue: time.Minute * 30,
+	},
+	MatchingRecordTaskStartedTimeout: {
+		KeyName:      "matching.recordTaskStartedTimeout",
+		Filters:      []Filter{DomainName},
+		Description:  "MatchingRecordTaskStartedTimeout is the request timeout for RecordActivityTaskStarted and RecordDecisionTaskStarted",
+		DefaultValue: time.Second,
 	},
 }
 

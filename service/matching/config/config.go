@@ -113,6 +113,7 @@ type (
 		EnableTasklistOwnershipGuard               dynamicproperties.BoolPropertyFn
 		ExcludeShortLivedTaskListsFromShardManager dynamicproperties.BoolPropertyFn
 		PercentageOnboardedToShardManager          dynamicproperties.IntPropertyFn
+		RecordTaskStartedTimeout                   dynamicproperties.DurationPropertyFnWithDomainFilter
 	}
 
 	ForwarderConfig struct {
@@ -248,6 +249,7 @@ func NewConfig(dc *dynamicconfig.Collection, hostName string, rpcConfig config.R
 		EnableReturnAllTaskListKinds:               dc.GetBoolProperty(dynamicproperties.MatchingEnableReturnAllTaskListKinds),
 		ExcludeShortLivedTaskListsFromShardManager: dc.GetBoolProperty(dynamicproperties.MatchingExcludeShortLivedTaskListsFromShardManager),
 		PercentageOnboardedToShardManager:          dc.GetIntProperty(dynamicproperties.MatchingPercentageOnboardedToShardManager),
+		RecordTaskStartedTimeout:                   dc.GetDurationPropertyFilteredByDomain(dynamicproperties.MatchingRecordTaskStartedTimeout),
 		MinTaskListWritePartitions:                 dc.GetIntPropertyFilteredByTaskListInfo(dynamicproperties.MatchingTaskListMinimumWritePartitions),
 	}
 }
