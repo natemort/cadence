@@ -866,6 +866,54 @@ func TestHandleBackfill(t *testing.T) {
 			assert.Equal(t, int64(1), c.Value())
 		})
 	}
+
+	t.Run("duplicate BackfillID is absorbed as idempotent retry", func(t *testing.T) {
+		state := &SchedulerWorkflowState{
+			PendingBackfills: []BackfillRequest{
+				{
+					StartTime:  time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+					EndTime:    time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC),
+					BackfillID: "bf-dup",
+				},
+			},
+		}
+		scope := tally.NewTestScope("", nil)
+		// Same BackfillID, even with a different time range, must not enqueue a
+		// second copy: BackfillSchedule is meant to be retry-safe by ID.
+		sig := BackfillSignal{
+			StartTime:  time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC),
+			EndTime:    time.Date(2026, 3, 2, 0, 0, 0, 0, time.UTC),
+			BackfillID: "bf-dup",
+		}
+		got := handleBackfill(testLogger, scope, sig, state)
+		assert.False(t, got)
+		assert.Len(t, state.PendingBackfills, 1)
+		assert.Equal(t, time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), state.PendingBackfills[0].StartTime)
+
+		c, ok := findCounter(scope.Snapshot().Counters(), SchedulerBackfillRejectedCountPerDomain,
+			map[string]string{ReasonTag: BackfillRejectedReasonDuplicateID})
+		require.True(t, ok)
+		assert.Equal(t, int64(1), c.Value())
+	})
+
+	t.Run("empty BackfillID does not collide with another empty BackfillID", func(t *testing.T) {
+		state := &SchedulerWorkflowState{
+			PendingBackfills: []BackfillRequest{
+				{
+					StartTime: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+					EndTime:   time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC),
+				},
+			},
+		}
+		scope := tally.NewTestScope("", nil)
+		sig := BackfillSignal{
+			StartTime: time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC),
+			EndTime:   time.Date(2026, 2, 2, 0, 0, 0, 0, time.UTC),
+		}
+		got := handleBackfill(testLogger, scope, sig, state)
+		assert.True(t, got)
+		assert.Len(t, state.PendingBackfills, 2)
+	})
 }
 
 func TestEffectiveFireOverlap(t *testing.T) {

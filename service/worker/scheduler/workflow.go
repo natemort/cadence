@@ -486,6 +486,18 @@ func handleBackfill(logger *zap.Logger, scope tally.Scope, sig BackfillSignal, s
 		return false
 	}
 	for _, existing := range state.PendingBackfills {
+		if sig.BackfillID != "" && existing.BackfillID == sig.BackfillID {
+			// Drop the duplicate: BackfillID already matches a pending
+			// request, so a second copy would fire the range twice. Match is
+			// only checked against state.PendingBackfills, so a retry that
+			// lands after the original has drained is not detected here.
+			scope.Tagged(map[string]string{ReasonTag: BackfillRejectedReasonDuplicateID}).
+				Counter(SchedulerBackfillRejectedCountPerDomain).Inc(1)
+			logger.Info("ignoring duplicate backfill: BackfillID matches a pending request",
+				zap.String("backfillId", sig.BackfillID),
+			)
+			return false
+		}
 		if sig.StartTime.Before(existing.EndTime) && sig.EndTime.After(existing.StartTime) {
 			logger.Warn("backfill window overlaps with pending backfill, fires for overlapping times will be deduplicated",
 				zap.String("newBackfillId", sig.BackfillID),
