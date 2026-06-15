@@ -781,6 +781,23 @@ func computeMissedFireTimes(sched cron.Schedule, lastRun, now time.Time, spec ty
 	return missedFiresResult{times: missed, truncated: true}
 }
 
+// countCronFires returns the number of cron fire times in (start, end] without
+// materializing them, capped at limit. The second return value is true when
+// the range would have produced more fires than the cap.
+func countCronFires(sched cron.Schedule, start, end time.Time, spec types.ScheduleSpec, limit int) (int, bool) {
+	count := 0
+	t := start
+	for count < limit {
+		next := computeNextRunTime(sched, t, spec)
+		if next.IsZero() || next.After(end) {
+			return count, false
+		}
+		count++
+		t = next
+	}
+	return count, true
+}
+
 // missedRunPolicyResult is the output of applyMissedRunPolicy.
 type missedRunPolicyResult struct {
 	toFire  []time.Time // fire times to execute, in order
@@ -938,10 +955,36 @@ func processMissedRunsAt(ctx workflow.Context, logger *zap.Logger, scope tally.S
 // Like processMissedRuns, it caps fires per execution and returns true
 // if more work remains (signalling the caller to ContinueAsNew).
 func processBackfills(ctx workflow.Context, logger *zap.Logger, scope tally.Scope, sched cron.Schedule, input *SchedulerWorkflowInput, state *SchedulerWorkflowState) bool {
-	// Backfills respect the pause state: an explicit user request to replay a time
-	// range should not fire workflows while the schedule is paused. The pending
-	// backfills are preserved in state and will execute once the schedule is unpaused.
-	if state.Paused || len(state.PendingBackfills) == 0 {
+	if len(state.PendingBackfills) == 0 {
+		return false
+	}
+
+	// Populate RunsTotal for any queued backfill that hasn't been counted
+	// yet. Done outside the pause short-circuit so DescribeSchedule reports
+	// accurate progress for queued work on a paused schedule instead of 0/0.
+	// Uses the cron parsed at the top of this workflow execution, so a
+	// same-batch UpdateSchedule that changed the cron does not leave us
+	// counting against the stale expression.
+	for i := range state.PendingBackfills {
+		bf := &state.PendingBackfills[i]
+		if bf.RunsTotalComputed {
+			continue
+		}
+		total, truncated := countCronFires(sched, bf.StartTime.Add(-time.Second), bf.EndTime, input.Spec, maxBackfillRunsTotalCount)
+		if truncated {
+			// Range exceeds the count cap; report the cap as a lower bound
+			// rather than overload 0 as "unknown".
+			bf.RunsTotal = int32(maxBackfillRunsTotalCount)
+		} else {
+			bf.RunsTotal = int32(total)
+		}
+		bf.RunsTotalComputed = true
+	}
+
+	// Backfills respect the pause state: an explicit user request to replay
+	// a time range should not fire workflows while the schedule is paused.
+	// The pending backfills are preserved and will execute on unpause.
+	if state.Paused {
 		return false
 	}
 
@@ -965,6 +1008,11 @@ func processBackfills(ctx workflow.Context, logger *zap.Logger, scope tally.Scop
 			overlap := effectiveFireOverlap(TriggerSourceBackfill, bf.OverlapPolicy, input.Policies.OverlapPolicy)
 			processScheduleFire(ctx, logger, scope, input, state, t, TriggerSourceBackfill, overlap, bf.BackfillID)
 			fired++
+			// Count any fire handed off to processScheduleFire, whether it
+			// started, was skipped under the overlap policy, or was queued
+			// into the BUFFER. Counting only "started" would pin a
+			// BUFFER-deferred backfill in OngoingBackfills indefinitely.
+			bf.RunsCompleted++
 		}
 
 		if fires.truncated {
@@ -984,6 +1032,8 @@ func processBackfills(ctx workflow.Context, logger *zap.Logger, scope tally.Scop
 		logger.Info("backfill completed",
 			zap.String("backfillId", bf.BackfillID),
 			zap.Int("firedTotal", fired),
+			zap.Int32("runsCompleted", bf.RunsCompleted),
+			zap.Int32("runsTotal", bf.RunsTotal),
 		)
 		state.PendingBackfills = state.PendingBackfills[1:]
 	}
@@ -998,6 +1048,19 @@ func processBackfills(ctx workflow.Context, logger *zap.Logger, scope tally.Scop
 // buildScheduleDescription creates a snapshot of the current schedule
 // configuration and runtime state for the describe query handler.
 func buildScheduleDescription(input *SchedulerWorkflowInput, state *SchedulerWorkflowState) *ScheduleDescription {
+	var ongoing []types.BackfillInfo
+	if len(state.PendingBackfills) > 0 {
+		ongoing = make([]types.BackfillInfo, 0, len(state.PendingBackfills))
+		for _, bf := range state.PendingBackfills {
+			ongoing = append(ongoing, types.BackfillInfo{
+				BackfillID:    bf.BackfillID,
+				StartTime:     bf.StartTime,
+				EndTime:       bf.EndTime,
+				RunsTotal:     bf.RunsTotal,
+				RunsCompleted: bf.RunsCompleted,
+			})
+		}
+	}
 	return &ScheduleDescription{
 		ScheduleID:       input.ScheduleID,
 		Domain:           input.Domain,
@@ -1014,6 +1077,7 @@ func buildScheduleDescription(input *SchedulerWorkflowInput, state *SchedulerWor
 		SkippedRuns:      state.SkippedRuns,
 		Memo:             input.Memo,
 		SearchAttributes: input.SearchAttributes,
+		OngoingBackfills: ongoing,
 	}
 }
 
