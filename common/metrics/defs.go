@@ -3013,12 +3013,15 @@ const (
 	SyncMatchForwardTaskThrottleErrorPerTasklist
 	AsyncMatchForwardTaskThrottleErrorPerTasklist
 	ForwardTaskLatencyPerTaskList
+	ForwardTaskLatencyPerTaskListHistogram
 	ForwardQueryCallsPerTaskList
 	ForwardQueryErrorsPerTaskList
 	ForwardQueryLatencyPerTaskList
+	ForwardQueryLatencyPerTaskListHistogram
 	ForwardPollCallsPerTaskList
 	ForwardPollErrorsPerTaskList
 	ForwardPollLatencyPerTaskList
+	ForwardPollLatencyPerTaskListHistogram
 	LocalToLocalMatchPerTaskListCounter
 	LocalToRemoteMatchPerTaskListCounter
 	RemoteToLocalMatchPerTaskListCounter
@@ -3034,19 +3037,24 @@ const (
 	TaskCountPerTaskListGauge
 	RateLimitPerTaskListGauge
 	SyncMatchLocalPollLatencyPerTaskList
+	SyncMatchLocalPollLatencyPerTaskListHistogram
 	SyncMatchForwardPollLatencyPerTaskList
+	SyncMatchForwardPollLatencyPerTaskListHistogram
 	AsyncMatchLocalPollCounterPerTaskList
 	AsyncMatchLocalPollAttemptPerTaskList
 	AsyncMatchLocalPollAttemptPerTaskListHistogram
 	AsyncMatchLocalPollLatencyPerTaskList
+	AsyncMatchLocalPollLatencyPerTaskListHistogram
 	AsyncMatchForwardPollCounterPerTaskList
 	AsyncMatchForwardPollAttemptPerTaskList
 	AsyncMatchForwardPollAttemptPerTaskListHistogram
 	AsyncMatchForwardPollLatencyPerTaskList
+	AsyncMatchForwardPollLatencyPerTaskListHistogram
 	AsyncMatchLocalPollAfterForwardFailedCounterPerTaskList
 	AsyncMatchLocalPollAfterForwardFailedAttemptPerTaskList
 	AsyncMatchLocalPollAfterForwardFailedAttemptPerTaskListHistogram
 	AsyncMatchLocalPollAfterForwardFailedLatencyPerTaskList
+	AsyncMatchLocalPollAfterForwardFailedLatencyPerTaskListHistogram
 	PollLocalMatchLatencyPerTaskList
 	PollLocalMatchLatencyPerTaskListHistogram
 	PollForwardMatchLatencyPerTaskList
@@ -3656,7 +3664,7 @@ var MetricDefs = map[ServiceIdx]map[MetricIdx]metricDefinition{
 		MultipleCompletionDecisionsCounter:                            {metricName: "multiple_completion_decisions", metricType: Counter},
 		FailedDecisionsCounter:                                        {metricName: "failed_decisions", metricType: Counter},
 		DecisionAttemptTimer:                                          {metricName: "decision_attempt", metricType: Timer},
-		DecisionAttemptHistogram:                                      {metricName: "decision_attempt_counts", metricType: Histogram, intExponentialBuckets: Mid1To16k},
+		DecisionAttemptHistogram:                                      {metricName: "decision_attempt_counts", metricType: Histogram, intExponentialBuckets: Mid1To50k},
 		DecisionRetriesExceededCounter:                                {metricName: "decision_retries_exceeded", metricType: Counter},
 		StaleMutableStateCounter:                                      {metricName: "stale_mutable_state", metricType: Counter},
 		DataInconsistentCounter:                                       {metricName: "data_inconsistent", metricType: Counter},
@@ -3962,9 +3970,12 @@ var MetricDefs = map[ServiceIdx]map[MetricIdx]metricDefinition{
 		AsyncMatchLatencyPerTaskList:                                     {metricName: "asyncmatch_latency_per_tl", metricRollupName: "asyncmatch_latency", metricType: Timer},
 		AsyncMatchLatencyPerTaskListHistogram:                            {metricName: "asyncmatch_latency_per_tl_ns", metricRollupName: "asyncmatch_latency_ns", metricType: Histogram, exponentialBuckets: Low1ms100s},
 		AsyncMatchDispatchTimeoutCounterPerTaskList:                      {metricName: "asyncmatch_dispatch_timeouts_per_tl", metricRollupName: "asyncmatch_dispatch_timeouts"},
-		ForwardTaskLatencyPerTaskList:                                    {metricName: "forward_task_latency_per_tl", metricRollupName: "forward_task_latency"},
-		ForwardQueryLatencyPerTaskList:                                   {metricName: "forward_query_latency_per_tl", metricRollupName: "forward_query_latency"},
-		ForwardPollLatencyPerTaskList:                                    {metricName: "forward_poll_latency_per_tl", metricRollupName: "forward_poll_latency"},
+		ForwardTaskLatencyPerTaskList:                                    {metricName: "forward_task_latency_per_tl", metricRollupName: "forward_task_latency", metricType: Timer},
+		ForwardTaskLatencyPerTaskListHistogram:                           {metricName: "forward_task_latency_per_tl_ns", metricRollupName: "forward_task_latency_ns", metricType: Histogram, exponentialBuckets: Low1ms100s},
+		ForwardQueryLatencyPerTaskList:                                   {metricName: "forward_query_latency_per_tl", metricRollupName: "forward_query_latency", metricType: Timer},
+		ForwardQueryLatencyPerTaskListHistogram:                          {metricName: "forward_query_latency_per_tl_ns", metricRollupName: "forward_query_latency_ns", metricType: Histogram, exponentialBuckets: Low1ms100s},
+		ForwardPollLatencyPerTaskList:                                    {metricName: "forward_poll_latency_per_tl", metricRollupName: "forward_poll_latency", metricType: Timer},
+		ForwardPollLatencyPerTaskListHistogram:                           {metricName: "forward_poll_latency_per_tl_ns", metricRollupName: "forward_poll_latency_ns", metricType: Histogram, exponentialBuckets: Low1ms100s},
 		LocalToLocalMatchPerTaskListCounter:                              {metricName: "local_to_local_matches_per_tl", metricRollupName: "local_to_local_matches"},
 		LocalToRemoteMatchPerTaskListCounter:                             {metricName: "local_to_remote_matches_per_tl", metricRollupName: "local_to_remote_matches"},
 		RemoteToLocalMatchPerTaskListCounter:                             {metricName: "remote_to_local_matches_per_tl", metricRollupName: "remote_to_local_matches"},
@@ -3979,20 +3990,25 @@ var MetricDefs = map[ServiceIdx]map[MetricIdx]metricDefinition{
 		TaskBacklogPerTaskListGauge:                                      {metricName: "task_backlog_per_tl", metricType: Gauge},
 		TaskCountPerTaskListGauge:                                        {metricName: "task_count_per_tl", metricType: Gauge},
 		RateLimitPerTaskListGauge:                                        {metricName: "rate_limit_per_tl", metricType: Gauge},
-		SyncMatchLocalPollLatencyPerTaskList:                             {metricName: "syncmatch_local_poll_latency_per_tl", metricRollupName: "syncmatch_local_poll_latency"},
-		SyncMatchForwardPollLatencyPerTaskList:                           {metricName: "syncmatch_forward_poll_latency_per_tl", metricRollupName: "syncmatch_forward_poll_latency"},
+		SyncMatchLocalPollLatencyPerTaskList:                             {metricName: "syncmatch_local_poll_latency_per_tl", metricRollupName: "syncmatch_local_poll_latency", metricType: Timer},
+		SyncMatchLocalPollLatencyPerTaskListHistogram:                    {metricName: "syncmatch_local_poll_latency_per_tl_ns", metricRollupName: "syncmatch_local_poll_latency_ns", metricType: Histogram, exponentialBuckets: Low1ms100s},
+		SyncMatchForwardPollLatencyPerTaskList:                           {metricName: "syncmatch_forward_poll_latency_per_tl", metricRollupName: "syncmatch_forward_poll_latency", metricType: Timer},
+		SyncMatchForwardPollLatencyPerTaskListHistogram:                  {metricName: "syncmatch_forward_poll_latency_per_tl_ns", metricRollupName: "syncmatch_forward_poll_latency_ns", metricType: Histogram, exponentialBuckets: Low1ms100s},
 		AsyncMatchLocalPollCounterPerTaskList:                            {metricName: "asyncmatch_local_poll_per_tl", metricRollupName: "asyncmatch_local_poll"},
 		AsyncMatchLocalPollAttemptPerTaskList:                            {metricName: "asyncmatch_local_poll_attempt_per_tl", metricRollupName: "asyncmatch_local_poll_attempt", metricType: Timer},
 		AsyncMatchLocalPollAttemptPerTaskListHistogram:                   {metricName: "asyncmatch_local_poll_attempt_per_tl_counts", metricRollupName: "asyncmatch_local_poll_attempt_counts", metricType: Histogram, intExponentialBuckets: Mid1To16k},
-		AsyncMatchLocalPollLatencyPerTaskList:                            {metricName: "asyncmatch_local_poll_latency_per_tl", metricRollupName: "asyncmatch_local_poll_latency"},
+		AsyncMatchLocalPollLatencyPerTaskList:                            {metricName: "asyncmatch_local_poll_latency_per_tl", metricRollupName: "asyncmatch_local_poll_latency", metricType: Timer},
+		AsyncMatchLocalPollLatencyPerTaskListHistogram:                   {metricName: "asyncmatch_local_poll_latency_per_tl_ns", metricRollupName: "asyncmatch_local_poll_latency_ns", metricType: Histogram, exponentialBuckets: Low1ms100s},
 		AsyncMatchForwardPollCounterPerTaskList:                          {metricName: "asyncmatch_forward_poll_per_tl", metricRollupName: "asyncmatch_forward_poll"},
 		AsyncMatchForwardPollAttemptPerTaskList:                          {metricName: "asyncmatch_forward_poll_attempt_per_tl", metricRollupName: "asyncmatch_forward_poll_attempt", metricType: Timer},
 		AsyncMatchForwardPollAttemptPerTaskListHistogram:                 {metricName: "asyncmatch_forward_poll_attempt_per_tl_counts", metricRollupName: "asyncmatch_forward_poll_attempt_counts", metricType: Histogram, intExponentialBuckets: Mid1To16k},
-		AsyncMatchForwardPollLatencyPerTaskList:                          {metricName: "asyncmatch_forward_poll_latency_per_tl", metricRollupName: "asyncmatch_forward_poll_latency"},
+		AsyncMatchForwardPollLatencyPerTaskList:                          {metricName: "asyncmatch_forward_poll_latency_per_tl", metricRollupName: "asyncmatch_forward_poll_latency", metricType: Timer},
+		AsyncMatchForwardPollLatencyPerTaskListHistogram:                 {metricName: "asyncmatch_forward_poll_latency_per_tl_ns", metricRollupName: "asyncmatch_forward_poll_latency_ns", metricType: Histogram, exponentialBuckets: Low1ms100s},
 		AsyncMatchLocalPollAfterForwardFailedCounterPerTaskList:          {metricName: "asyncmatch_local_poll_after_forward_failed_per_tl", metricRollupName: "asyncmatch_local_poll_after_forward_failed"},
 		AsyncMatchLocalPollAfterForwardFailedAttemptPerTaskList:          {metricName: "asyncmatch_local_poll_after_forward_failed_attempt_per_tl", metricRollupName: "asyncmatch_local_poll_after_forward_failed_attempt", metricType: Timer},
 		AsyncMatchLocalPollAfterForwardFailedAttemptPerTaskListHistogram: {metricName: "asyncmatch_local_poll_after_forward_failed_attempt_per_tl_counts", metricRollupName: "asyncmatch_local_poll_after_forward_failed_attempt_counts", metricType: Histogram, intExponentialBuckets: Mid1To16k},
-		AsyncMatchLocalPollAfterForwardFailedLatencyPerTaskList:          {metricName: "asyncmatch_local_poll_after_forward_failed_latency_per_tl", metricRollupName: "asyncmatch_local_poll_after_forward_failed_latency"},
+		AsyncMatchLocalPollAfterForwardFailedLatencyPerTaskList:          {metricName: "asyncmatch_local_poll_after_forward_failed_latency_per_tl", metricRollupName: "asyncmatch_local_poll_after_forward_failed_latency", metricType: Timer},
+		AsyncMatchLocalPollAfterForwardFailedLatencyPerTaskListHistogram: {metricName: "asyncmatch_local_poll_after_forward_failed_latency_per_tl_ns", metricRollupName: "asyncmatch_local_poll_after_forward_failed_latency_ns", metricType: Histogram, exponentialBuckets: Low1ms100s},
 		PollLocalMatchLatencyPerTaskList:                                 {metricName: "poll_local_match_latency_per_tl", metricRollupName: "poll_local_match_latency", metricType: Timer},
 		PollLocalMatchLatencyPerTaskListHistogram:                        {metricName: "poll_local_match_latency_per_tl_ns", metricRollupName: "poll_local_match_latency_ns", metricType: Histogram, exponentialBuckets: Low1ms100s},
 		PollForwardMatchLatencyPerTaskList:                               {metricName: "poll_forward_match_latency_per_tl", metricRollupName: "poll_forward_match_latency", metricType: Timer},
