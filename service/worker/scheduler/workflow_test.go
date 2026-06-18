@@ -373,6 +373,9 @@ func TestApplyMissedRunPolicy(t *testing.T) {
 func TestBuildScheduleDescription(t *testing.T) {
 	lastRun := time.Date(2026, 1, 15, 10, 0, 0, 0, time.UTC)
 	nextRun := time.Date(2026, 1, 15, 11, 0, 0, 0, time.UTC)
+	createTime := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	updateTime := time.Date(2026, 1, 10, 8, 0, 0, 0, time.UTC)
+	pauseTime := time.Date(2026, 1, 12, 9, 30, 0, 0, time.UTC)
 
 	tests := []struct {
 		name  string
@@ -394,11 +397,13 @@ func TestBuildScheduleDescription(t *testing.T) {
 				Policies: types.SchedulePolicies{OverlapPolicy: types.ScheduleOverlapPolicySkipNew},
 			},
 			state: SchedulerWorkflowState{
-				LastRunTime: lastRun,
-				NextRunTime: nextRun,
-				TotalRuns:   42,
-				MissedRuns:  1,
-				SkippedRuns: 3,
+				LastRunTime:    lastRun,
+				NextRunTime:    nextRun,
+				TotalRuns:      42,
+				MissedRuns:     1,
+				SkippedRuns:    3,
+				CreateTime:     createTime,
+				LastUpdateTime: updateTime,
 			},
 			want: &ScheduleDescription{
 				ScheduleID: "sched-1",
@@ -409,12 +414,14 @@ func TestBuildScheduleDescription(t *testing.T) {
 						WorkflowType: &types.WorkflowType{Name: "my-wf"},
 					},
 				},
-				Policies:    types.SchedulePolicies{OverlapPolicy: types.ScheduleOverlapPolicySkipNew},
-				LastRunTime: lastRun,
-				NextRunTime: nextRun,
-				TotalRuns:   42,
-				MissedRuns:  1,
-				SkippedRuns: 3,
+				Policies:       types.SchedulePolicies{OverlapPolicy: types.ScheduleOverlapPolicySkipNew},
+				LastRunTime:    lastRun,
+				NextRunTime:    nextRun,
+				TotalRuns:      42,
+				MissedRuns:     1,
+				SkippedRuns:    3,
+				CreateTime:     createTime,
+				LastUpdateTime: updateTime,
 			},
 		},
 		{
@@ -428,6 +435,7 @@ func TestBuildScheduleDescription(t *testing.T) {
 				Paused:      true,
 				PauseReason: "maintenance",
 				PausedBy:    "admin@test.com",
+				PausedAt:    pauseTime,
 				TotalRuns:   10,
 			},
 			want: &ScheduleDescription{
@@ -437,6 +445,7 @@ func TestBuildScheduleDescription(t *testing.T) {
 				Paused:      true,
 				PauseReason: "maintenance",
 				PausedBy:    "admin@test.com",
+				PausedAt:    pauseTime,
 				TotalRuns:   10,
 			},
 		},
@@ -518,40 +527,50 @@ func TestBuildScheduleDescription(t *testing.T) {
 }
 
 func TestHandlePause(t *testing.T) {
+	fixedNow := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+
 	tests := []struct {
 		name         string
 		initial      SchedulerWorkflowState
 		sig          PauseSignal
+		now          time.Time
 		wantPaused   bool
 		wantReason   string
 		wantPausedBy string
+		wantPausedAt time.Time
 		wantChanged  bool
 	}{
 		{
 			name:         "pause from running",
 			initial:      SchedulerWorkflowState{},
 			sig:          PauseSignal{Reason: "maintenance", PausedBy: "admin@test.com"},
+			now:          fixedNow,
 			wantPaused:   true,
 			wantReason:   "maintenance",
 			wantPausedBy: "admin@test.com",
+			wantPausedAt: fixedNow,
 			wantChanged:  true,
 		},
 		{
 			name:         "pause when already paused is a no-op",
 			initial:      SchedulerWorkflowState{Paused: true, PauseReason: "old", PausedBy: "old-user"},
 			sig:          PauseSignal{Reason: "new reason", PausedBy: "new-user"},
+			now:          fixedNow,
 			wantPaused:   true,
 			wantReason:   "old",
 			wantPausedBy: "old-user",
+			wantPausedAt: time.Time{},
 			wantChanged:  false,
 		},
 		{
 			name:         "pause with empty reason",
 			initial:      SchedulerWorkflowState{},
 			sig:          PauseSignal{},
+			now:          fixedNow,
 			wantPaused:   true,
 			wantReason:   "",
 			wantPausedBy: "",
+			wantPausedAt: fixedNow,
 			wantChanged:  true,
 		},
 	}
@@ -559,16 +578,19 @@ func TestHandlePause(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			state := tt.initial
-			changed := handlePause(testLogger, tt.sig, &state)
+			changed := handlePause(testLogger, tt.sig, &state, tt.now)
 			assert.Equal(t, tt.wantChanged, changed)
 			assert.Equal(t, tt.wantPaused, state.Paused)
 			assert.Equal(t, tt.wantReason, state.PauseReason)
 			assert.Equal(t, tt.wantPausedBy, state.PausedBy)
+			assert.Equal(t, tt.wantPausedAt, state.PausedAt)
 		})
 	}
 }
 
 func TestHandleUnpause(t *testing.T) {
+	pausedAt := time.Date(2026, 5, 1, 9, 0, 0, 0, time.UTC)
+
 	tests := []struct {
 		name                     string
 		initial                  SchedulerWorkflowState
@@ -578,15 +600,17 @@ func TestHandleUnpause(t *testing.T) {
 		wantPausedBy             string
 		wantChanged              bool
 		wantUnpauseCatchUpPolicy types.ScheduleCatchUpPolicy
+		wantPausedAtCleared      bool
 	}{
 		{
-			name:         "unpause from paused",
-			initial:      SchedulerWorkflowState{Paused: true, PauseReason: "maintenance", PausedBy: "admin"},
-			sig:          UnpauseSignal{Reason: "maintenance done"},
-			wantPaused:   false,
-			wantReason:   "",
-			wantPausedBy: "",
-			wantChanged:  true,
+			name:                "unpause from paused",
+			initial:             SchedulerWorkflowState{Paused: true, PauseReason: "maintenance", PausedBy: "admin", PausedAt: pausedAt},
+			sig:                 UnpauseSignal{Reason: "maintenance done"},
+			wantPaused:          false,
+			wantReason:          "",
+			wantPausedBy:        "",
+			wantChanged:         true,
+			wantPausedAtCleared: true,
 		},
 		{
 			name:         "unpause when not paused is a no-op",
@@ -599,27 +623,30 @@ func TestHandleUnpause(t *testing.T) {
 		},
 		{
 			name:                     "unpause with CatchUpPolicyOne stores override in state",
-			initial:                  SchedulerWorkflowState{Paused: true},
+			initial:                  SchedulerWorkflowState{Paused: true, PausedAt: pausedAt},
 			sig:                      UnpauseSignal{Reason: "resume", CatchUpPolicy: types.ScheduleCatchUpPolicyOne},
 			wantPaused:               false,
 			wantChanged:              true,
 			wantUnpauseCatchUpPolicy: types.ScheduleCatchUpPolicyOne,
+			wantPausedAtCleared:      true,
 		},
 		{
 			name:                     "unpause with CatchUpPolicySkip stores override in state",
-			initial:                  SchedulerWorkflowState{Paused: true},
+			initial:                  SchedulerWorkflowState{Paused: true, PausedAt: pausedAt},
 			sig:                      UnpauseSignal{Reason: "resume", CatchUpPolicy: types.ScheduleCatchUpPolicySkip},
 			wantPaused:               false,
 			wantChanged:              true,
 			wantUnpauseCatchUpPolicy: types.ScheduleCatchUpPolicySkip,
+			wantPausedAtCleared:      true,
 		},
 		{
 			name:                     "unpause with Invalid policy does not set override",
-			initial:                  SchedulerWorkflowState{Paused: true},
+			initial:                  SchedulerWorkflowState{Paused: true, PausedAt: pausedAt},
 			sig:                      UnpauseSignal{Reason: "resume", CatchUpPolicy: types.ScheduleCatchUpPolicyInvalid},
 			wantPaused:               false,
 			wantChanged:              true,
 			wantUnpauseCatchUpPolicy: types.ScheduleCatchUpPolicyInvalid,
+			wantPausedAtCleared:      true,
 		},
 	}
 
@@ -632,6 +659,9 @@ func TestHandleUnpause(t *testing.T) {
 			assert.Equal(t, tt.wantReason, state.PauseReason)
 			assert.Equal(t, tt.wantPausedBy, state.PausedBy)
 			assert.Equal(t, tt.wantUnpauseCatchUpPolicy, state.UnpauseCatchUpPolicy)
+			if tt.wantPausedAtCleared {
+				assert.True(t, state.PausedAt.IsZero(), "PausedAt should be cleared on unpause")
+			}
 		})
 	}
 }
@@ -1981,6 +2011,57 @@ func TestEffectiveBufferLimit(t *testing.T) {
 	}
 }
 
+func TestHandleUpdate_CatchUpWindowPreservation(t *testing.T) {
+	tests := []struct {
+		name       string
+		existing   time.Duration
+		updateWith time.Duration
+		want       time.Duration
+	}{
+		{
+			name:       "zero update preserves existing non-zero window",
+			existing:   365 * 24 * time.Hour,
+			updateWith: 0,
+			want:       365 * 24 * time.Hour,
+		},
+		{
+			name:       "explicit window in update overrides existing",
+			existing:   365 * 24 * time.Hour,
+			updateWith: 90 * time.Minute,
+			want:       90 * time.Minute,
+		},
+		{
+			name:       "zero update leaves zero window unchanged",
+			existing:   0,
+			updateWith: 0,
+			want:       0,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			input := SchedulerWorkflowInput{
+				Spec: types.ScheduleSpec{CronExpression: "0 * * * *"},
+				Policies: types.SchedulePolicies{
+					OverlapPolicy: types.ScheduleOverlapPolicySkipNew,
+					CatchUpPolicy: types.ScheduleCatchUpPolicyOne,
+					CatchUpWindow: tt.existing,
+				},
+			}
+			state := &SchedulerWorkflowState{}
+			sig := UpdateSignal{
+				Policies: &types.SchedulePolicies{
+					OverlapPolicy: types.ScheduleOverlapPolicySkipNew,
+					CatchUpPolicy: types.ScheduleCatchUpPolicyOne,
+					CatchUpWindow: tt.updateWith,
+				},
+			}
+			changed := handleUpdate(testLogger, sig, &input, state)
+			assert.True(t, changed)
+			assert.Equal(t, tt.want, input.Policies.CatchUpWindow)
+		})
+	}
+}
+
 func TestHandleUpdate_RunningWorkflowsClearedOnOverlapPolicyChange(t *testing.T) {
 	runningWFs := []RunningWorkflowInfo{
 		{WorkflowID: "wf-1", RunID: "run-1"},
@@ -2140,6 +2221,41 @@ func TestHandleUpdate_BufferedFiresClearedOnOverlapPolicyChange(t *testing.T) {
 			assert.Equal(t, tt.toOverlap, input.Policies.OverlapPolicy)
 			assert.Len(t, state.BufferedFires, tt.wantFiresLen)
 			assert.Equal(t, tt.wantSkippedRuns, state.SkippedRuns)
+		})
+	}
+}
+
+func TestEnsurePolicyDefaults(t *testing.T) {
+	tests := map[string]struct {
+		input      types.SchedulePolicies
+		wantWindow time.Duration
+	}{
+		"ONE with unset window gets default": {
+			input:      types.SchedulePolicies{CatchUpPolicy: types.ScheduleCatchUpPolicyOne},
+			wantWindow: defaultCatchUpWindow,
+		},
+		"ALL with unset window gets default": {
+			input:      types.SchedulePolicies{CatchUpPolicy: types.ScheduleCatchUpPolicyAll},
+			wantWindow: defaultCatchUpWindow,
+		},
+		"explicit window is preserved": {
+			input:      types.SchedulePolicies{CatchUpPolicy: types.ScheduleCatchUpPolicyAll, CatchUpWindow: 30 * time.Minute},
+			wantWindow: 30 * time.Minute,
+		},
+		"SKIP does not set window": {
+			input:      types.SchedulePolicies{CatchUpPolicy: types.ScheduleCatchUpPolicySkip},
+			wantWindow: 0,
+		},
+		"zero policy does not set window": {
+			input:      types.SchedulePolicies{},
+			wantWindow: 0,
+		},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			p := tt.input
+			ensurePolicyDefaults(&p)
+			assert.Equal(t, tt.wantWindow, p.CatchUpWindow)
 		})
 	}
 }
