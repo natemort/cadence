@@ -131,10 +131,12 @@ const (
 	ScheduleStatePaused = "paused"
 
 	maxIterationsBeforeContinueAsNew = 500
-	maxCatchUpFiresPerExecution      = 10
-	maxBackfillFiresPerExecution     = 10
-	maxDrainFiresPerExecution        = 10
-	maxPendingBackfills              = 10
+	// maxActivitiesPerExecution is the per-execution ceiling for local-activity
+	// dispatches. processMissedRuns, processBackfills, and drainBufferedFires
+	// all decrement the same counter, so the total fires per execution is
+	// bounded by this value before ContinueAsNew.
+	maxActivitiesPerExecution = 500
+	maxPendingBackfills       = 10
 
 	// maxBackfillRunsTotalCount caps the cron walk that populates
 	// BackfillRequest.RunsTotal. When a backfill range produces more fires
@@ -152,7 +154,19 @@ const (
 	localActivityMaxRetries             = 3
 	localActivityRetryInitialInterval   = time.Second
 	localActivityRetryMaxInterval       = 10 * time.Second
+
+	// watcherActivityScheduleToCloseTimeout bounds the watcher activity lifetime.
+	// 24h covers workflows that run for many hours; transient describe errors are
+	// retried within the activity rather than surfaced to the workflow.
+	watcherActivityScheduleToCloseTimeout = 24 * time.Hour
+	// watcherActivityHeartbeatTimeout must exceed watcherPollInterval by enough
+	// margin that a single slow poll does not look like a dead worker.
+	watcherActivityHeartbeatTimeout = 65 * time.Second
 )
+
+// watcherPollInterval controls how often the watcher activity calls
+// DescribeWorkflowExecution. 5s balances drain latency against RPC load.
+var watcherPollInterval = 5 * time.Second
 
 // SchedulerWorkflowInput is the input to the scheduler workflow.
 // It carries the schedule definition and any prior state (for ContinueAsNew).
