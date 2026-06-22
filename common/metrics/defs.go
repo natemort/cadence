@@ -118,6 +118,9 @@ const (
 
 	MutableStateCacheTypeTagValue = "mutablestate"
 	EventsCacheTypeTagValue       = "events"
+	LRUCacheTypeTagValue          = "lru"
+	ReplicationCacheTypeTagValue  = "replication"
+	SourceClusterNoneTagValue     = "none"
 )
 
 // Common service base metrics
