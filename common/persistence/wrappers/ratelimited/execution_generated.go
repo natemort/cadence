@@ -62,6 +62,14 @@ func (c *ratelimitedExecutionManager) CreateFailoverMarkerTasks(ctx context.Cont
 	return c.wrapped.CreateFailoverMarkerTasks(ctx, request)
 }
 
+func (c *ratelimitedExecutionManager) CreateHistoryTasks(ctx context.Context, request *_sourcePersistence.CreateHistoryTasksRequest) (err error) {
+	if !c.callerBypass.AllowLimiter(ctx, c.rateLimiter) {
+		err = ErrPersistenceLimitExceeded
+		return
+	}
+	return c.wrapped.CreateHistoryTasks(ctx, request)
+}
+
 func (c *ratelimitedExecutionManager) CreateWorkflowExecution(ctx context.Context, request *_sourcePersistence.CreateWorkflowExecutionRequest) (cp1 *_sourcePersistence.CreateWorkflowExecutionResponse, err error) {
 	if !c.callerBypass.AllowLimiter(ctx, c.rateLimiter) {
 		err = ErrPersistenceLimitExceeded

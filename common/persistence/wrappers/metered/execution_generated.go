@@ -121,6 +121,30 @@ func (c *meteredExecutionManager) CreateFailoverMarkerTasks(ctx context.Context,
 	return
 }
 
+func (c *meteredExecutionManager) CreateHistoryTasks(ctx context.Context, request *_sourcePersistence.CreateHistoryTasksRequest) (err error) {
+	op := func() error {
+		err = c.wrapped.CreateHistoryTasks(ctx, request)
+		return err
+	}
+
+	retryCount := getRetryCountFromContext(ctx)
+	if domainName, hasDomainName := getDomainNameFromRequest(request); hasDomainName {
+		logTags := append([]tag.Tag{tag.WorkflowDomainName(domainName)}, getCustomLogTags(request)...)
+		c.logger.Debug("Persistence CreateHistoryTasks called", logTags...)
+		if c.enableShardIDMetrics() {
+			err = c.callWithDomainAndShardScope(metrics.PersistenceCreateHistoryTasksScope, op, metrics.DomainTag(domainName),
+				metrics.ShardIDTag(c.GetShardID()), metrics.IsRetryTag(retryCount > 0))
+		} else {
+			err = c.call(metrics.PersistenceCreateHistoryTasksScope, op, metrics.DomainTag(domainName), metrics.IsRetryTag(retryCount > 0))
+		}
+		return
+	}
+
+	err = c.callWithoutDomainTag(metrics.PersistenceCreateHistoryTasksScope, op, append(getCustomMetricTags(request), metrics.IsRetryTag(retryCount > 0))...)
+
+	return
+}
+
 func (c *meteredExecutionManager) CreateWorkflowExecution(ctx context.Context, request *_sourcePersistence.CreateWorkflowExecutionRequest) (cp1 *_sourcePersistence.CreateWorkflowExecutionResponse, err error) {
 	op := func() error {
 		cp1, err = c.wrapped.CreateWorkflowExecution(ctx, request)
