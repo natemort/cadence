@@ -517,14 +517,15 @@ func TestCachedQueueReader_GetTask(t *testing.T) {
 	)
 
 	tests := []struct {
-		name       string
-		mode       string
-		lower      persistence.HistoryTaskKey
-		upper      persistence.HistoryTaskKey
-		req        *GetTaskRequest
-		setupMocks func(base *MockQueueReader, queue *MockInMemQueue)
-		wantErr    bool
-		wantResp   *GetTaskResponse
+		name        string
+		mode        string
+		lastRangeID int64
+		lower       persistence.HistoryTaskKey
+		upper       persistence.HistoryTaskKey
+		req         *GetTaskRequest
+		setupMocks  func(base *MockQueueReader, queue *MockInMemQueue, shard *shard.MockContext)
+		wantErr     bool
+		wantResp    *GetTaskResponse
 	}{
 		{
 			name:  "disabled delegates to base",
@@ -535,7 +536,7 @@ func TestCachedQueueReader_GetTask(t *testing.T) {
 				Predicate: NewUniversalPredicate(),
 				PageSize:  10,
 			},
-			setupMocks: func(base *MockQueueReader, queue *MockInMemQueue) {
+			setupMocks: func(base *MockQueueReader, queue *MockInMemQueue, _ *shard.MockContext) {
 				base.EXPECT().GetTask(gomock.Any(), gomock.Any()).Return(&GetTaskResponse{
 					Progress: newProgress(lower, upper),
 				}, nil)
@@ -554,7 +555,7 @@ func TestCachedQueueReader_GetTask(t *testing.T) {
 				Predicate: NewUniversalPredicate(),
 				PageSize:  10,
 			},
-			setupMocks: func(base *MockQueueReader, queue *MockInMemQueue) {
+			setupMocks: func(base *MockQueueReader, queue *MockInMemQueue, _ *shard.MockContext) {
 				queue.EXPECT().Len().Return(0).AnyTimes()
 				base.EXPECT().GetTask(gomock.Any(), gomock.Any()).Return(&GetTaskResponse{
 					Progress: &GetTaskProgress{
@@ -580,7 +581,7 @@ func TestCachedQueueReader_GetTask(t *testing.T) {
 				Predicate: NewUniversalPredicate(),
 				PageSize:  10,
 			},
-			setupMocks: func(base *MockQueueReader, queue *MockInMemQueue) {
+			setupMocks: func(base *MockQueueReader, queue *MockInMemQueue, _ *shard.MockContext) {
 				queue.EXPECT().Len().Return(0).AnyTimes()
 				base.EXPECT().GetTask(gomock.Any(), gomock.Any()).Return(nil, assert.AnError)
 			},
@@ -595,7 +596,7 @@ func TestCachedQueueReader_GetTask(t *testing.T) {
 				Predicate: NewUniversalPredicate(),
 				PageSize:  10,
 			},
-			setupMocks: func(base *MockQueueReader, queue *MockInMemQueue) {
+			setupMocks: func(base *MockQueueReader, queue *MockInMemQueue, _ *shard.MockContext) {
 				queue.EXPECT().Len().Return(0).AnyTimes()
 				queue.EXPECT().GetTasks(lower, upper, gomock.Any(), 10).
 					Return([]persistence.Task{t1, t2}, upper)
@@ -626,7 +627,7 @@ func TestCachedQueueReader_GetTask(t *testing.T) {
 				Predicate: NewUniversalPredicate(),
 				PageSize:  10,
 			},
-			setupMocks: func(base *MockQueueReader, queue *MockInMemQueue) {
+			setupMocks: func(base *MockQueueReader, queue *MockInMemQueue, _ *shard.MockContext) {
 				queue.EXPECT().Len().Return(0).AnyTimes()
 				queue.EXPECT().GetTasks(cacheStart, rangeMax, gomock.Any(), 10).
 					Return([]persistence.Task{cacheTask}, rangeMax)
@@ -657,7 +658,7 @@ func TestCachedQueueReader_GetTask(t *testing.T) {
 				Predicate: NewUniversalPredicate(),
 				PageSize:  10,
 			},
-			setupMocks: func(base *MockQueueReader, queue *MockInMemQueue) {
+			setupMocks: func(base *MockQueueReader, queue *MockInMemQueue, _ *shard.MockContext) {
 				// no queue.Len(): early return before acquiring lock
 				base.EXPECT().GetTask(gomock.Any(), gomock.Any()).Return(&GetTaskResponse{
 					Progress: &GetTaskProgress{
@@ -683,7 +684,7 @@ func TestCachedQueueReader_GetTask(t *testing.T) {
 				Predicate: NewUniversalPredicate(),
 				PageSize:  10,
 			},
-			setupMocks: func(base *MockQueueReader, queue *MockInMemQueue) {
+			setupMocks: func(base *MockQueueReader, queue *MockInMemQueue, _ *shard.MockContext) {
 				queue.EXPECT().Len().Return(0).AnyTimes()
 				queue.EXPECT().GetTasks(lower, upper, gomock.Any(), 10).
 					Return(nil, upper) // no tasks; nextTaskKey = upper
@@ -708,7 +709,7 @@ func TestCachedQueueReader_GetTask(t *testing.T) {
 				Predicate: NewUniversalPredicate(),
 				PageSize:  10,
 			},
-			setupMocks: func(base *MockQueueReader, queue *MockInMemQueue) {
+			setupMocks: func(base *MockQueueReader, queue *MockInMemQueue, _ *shard.MockContext) {
 				queue.EXPECT().Len().Return(0).AnyTimes()
 				base.EXPECT().GetTask(gomock.Any(), gomock.Any()).Return(&GetTaskResponse{
 					Progress: &GetTaskProgress{
@@ -735,7 +736,51 @@ func TestCachedQueueReader_GetTask(t *testing.T) {
 				Predicate: NewUniversalPredicate(),
 				PageSize:  10,
 			},
-			setupMocks: func(base *MockQueueReader, queue *MockInMemQueue) {
+			setupMocks: func(base *MockQueueReader, queue *MockInMemQueue, _ *shard.MockContext) {
+				queue.EXPECT().Len().Return(0).AnyTimes()
+				base.EXPECT().GetTask(gomock.Any(), gomock.Any()).Return(&GetTaskResponse{
+					Progress: newProgress(lower, upper),
+				}, nil)
+			},
+			wantResp: &GetTaskResponse{
+				Progress: newProgress(lower, upper),
+			},
+		},
+		{
+			name:        "rangeID changed by >1: clears cache and falls back to base",
+			mode:        "enabled",
+			lastRangeID: 1,
+			lower:       lower, upper: upper,
+			req: &GetTaskRequest{
+				Progress:  newProgress(lower, rangeMax),
+				Predicate: NewUniversalPredicate(),
+				PageSize:  10,
+			},
+			setupMocks: func(base *MockQueueReader, queue *MockInMemQueue, _ *shard.MockContext) {
+				queue.EXPECT().Len().Return(0).AnyTimes()
+				queue.EXPECT().Clear()
+				base.EXPECT().GetTask(gomock.Any(), gomock.Any()).Return(&GetTaskResponse{
+					Progress: newProgress(upper, rangeMax),
+				}, nil)
+			},
+			wantResp: &GetTaskResponse{
+				Progress: newProgress(upper, rangeMax),
+			},
+		},
+		{
+			// lastRangeID=-1, shard returns 0: 0 == -1+1 → same-host reacquisition, no fallback.
+			// Cache bounds are empty (MinimumHistoryTaskKey) → cache miss → base.GetTask.
+			// Absence of queue.Clear() expectation proves no cache clear occurred.
+			name:        "rangeID changed by 1: same-host reacquisition, no fallback",
+			mode:        "enabled",
+			lastRangeID: -1,
+			lower:       persistence.MinimumHistoryTaskKey, upper: persistence.MinimumHistoryTaskKey,
+			req: &GetTaskRequest{
+				Progress:  newProgress(lower, upper),
+				Predicate: NewUniversalPredicate(),
+				PageSize:  10,
+			},
+			setupMocks: func(base *MockQueueReader, queue *MockInMemQueue, _ *shard.MockContext) {
 				queue.EXPECT().Len().Return(0).AnyTimes()
 				base.EXPECT().GetTask(gomock.Any(), gomock.Any()).Return(&GetTaskResponse{
 					Progress: newProgress(lower, upper),
@@ -755,7 +800,8 @@ func TestCachedQueueReader_GetTask(t *testing.T) {
 			})
 			base, queue := deps.mockBase, deps.mockQueue
 			setBounds(r, tc.lower, tc.upper)
-			tc.setupMocks(base, queue)
+			r.lastRangeID = tc.lastRangeID
+			tc.setupMocks(base, queue, deps.mockShard)
 
 			resp, err := r.GetTask(context.Background(), tc.req)
 
@@ -1203,14 +1249,15 @@ func TestCachedQueueReader_LookAHead(t *testing.T) {
 	task1 := newTask(1, now.Add(10*time.Minute))
 
 	tests := []struct {
-		name       string
-		mode       string
-		initLower  persistence.HistoryTaskKey
-		initUpper  persistence.HistoryTaskKey
-		minKey     persistence.HistoryTaskKey
-		setupMocks func(base *MockQueueReader, queue *MockInMemQueue)
-		wantErr    bool
-		wantResp   *LookAHeadResponse
+		name        string
+		mode        string
+		lastRangeID int64
+		initLower   persistence.HistoryTaskKey
+		initUpper   persistence.HistoryTaskKey
+		minKey      persistence.HistoryTaskKey
+		setupMocks  func(base *MockQueueReader, queue *MockInMemQueue, shard *shard.MockContext)
+		wantErr     bool
+		wantResp    *LookAHeadResponse
 	}{
 		{
 			name:      "disabled falls back to DB",
@@ -1218,7 +1265,7 @@ func TestCachedQueueReader_LookAHead(t *testing.T) {
 			initLower: persistence.MinimumHistoryTaskKey,
 			initUpper: persistence.MinimumHistoryTaskKey,
 			minKey:    lower,
-			setupMocks: func(base *MockQueueReader, queue *MockInMemQueue) {
+			setupMocks: func(base *MockQueueReader, queue *MockInMemQueue, _ *shard.MockContext) {
 				// disabled returns before acquiring the lock, so no queue.Len()
 				base.EXPECT().LookAHead(gomock.Any(), gomock.Any()).Return(&LookAHeadResponse{}, nil)
 			},
@@ -1230,7 +1277,7 @@ func TestCachedQueueReader_LookAHead(t *testing.T) {
 			initLower: persistence.MinimumHistoryTaskKey,
 			initUpper: persistence.MinimumHistoryTaskKey,
 			minKey:    lower,
-			setupMocks: func(base *MockQueueReader, queue *MockInMemQueue) {
+			setupMocks: func(base *MockQueueReader, queue *MockInMemQueue, _ *shard.MockContext) {
 				// disabled returns before acquiring the lock, so no queue.Len()
 				base.EXPECT().LookAHead(gomock.Any(), gomock.Any()).Return(nil, assert.AnError)
 			},
@@ -1244,7 +1291,7 @@ func TestCachedQueueReader_LookAHead(t *testing.T) {
 			initLower: lower,
 			initUpper: upper,
 			minKey:    lower,
-			setupMocks: func(base *MockQueueReader, queue *MockInMemQueue) {
+			setupMocks: func(base *MockQueueReader, queue *MockInMemQueue, _ *shard.MockContext) {
 				// returns before acquiring the lock, so no queue.Len()
 				base.EXPECT().LookAHead(gomock.Any(), gomock.Any()).Return(&LookAHeadResponse{Task: task1}, nil)
 			},
@@ -1256,7 +1303,7 @@ func TestCachedQueueReader_LookAHead(t *testing.T) {
 			initLower: newTimeKey(now.Add(time.Minute)),
 			initUpper: upper,
 			minKey:    lower, // lower < initLower → miss
-			setupMocks: func(base *MockQueueReader, queue *MockInMemQueue) {
+			setupMocks: func(base *MockQueueReader, queue *MockInMemQueue, _ *shard.MockContext) {
 				queue.EXPECT().Len().Return(0).AnyTimes()
 				base.EXPECT().LookAHead(gomock.Any(), gomock.Any()).Return(&LookAHeadResponse{}, nil)
 			},
@@ -1268,7 +1315,7 @@ func TestCachedQueueReader_LookAHead(t *testing.T) {
 			initLower: lower,
 			initUpper: upper,
 			minKey:    upper, // upper is exclusive → isTaskCovered false → miss
-			setupMocks: func(base *MockQueueReader, queue *MockInMemQueue) {
+			setupMocks: func(base *MockQueueReader, queue *MockInMemQueue, _ *shard.MockContext) {
 				queue.EXPECT().Len().Return(0).AnyTimes()
 				base.EXPECT().LookAHead(gomock.Any(), gomock.Any()).Return(&LookAHeadResponse{}, nil)
 			},
@@ -1280,7 +1327,7 @@ func TestCachedQueueReader_LookAHead(t *testing.T) {
 			initLower: lower,
 			initUpper: upper,
 			minKey:    lower,
-			setupMocks: func(base *MockQueueReader, queue *MockInMemQueue) {
+			setupMocks: func(base *MockQueueReader, queue *MockInMemQueue, _ *shard.MockContext) {
 				queue.EXPECT().Len().Return(0).AnyTimes()
 				queue.EXPECT().LookAHead(lower).Return(task1)
 			},
@@ -1295,7 +1342,42 @@ func TestCachedQueueReader_LookAHead(t *testing.T) {
 			initLower: lower,
 			initUpper: upper,
 			minKey:    lower,
-			setupMocks: func(base *MockQueueReader, queue *MockInMemQueue) {
+			setupMocks: func(base *MockQueueReader, queue *MockInMemQueue, _ *shard.MockContext) {
+				queue.EXPECT().Len().Return(0).AnyTimes()
+				queue.EXPECT().LookAHead(lower).Return(nil)
+			},
+			wantResp: &LookAHeadResponse{
+				LookAheadMaxTime: upper.GetScheduledTime(),
+			},
+		},
+		{
+			name:        "rangeID changed by >1: clears cache and falls back to base",
+			mode:        "enabled",
+			lastRangeID: 1,
+			initLower:   lower,
+			initUpper:   upper,
+			minKey:      lower,
+			setupMocks: func(base *MockQueueReader, queue *MockInMemQueue, _ *shard.MockContext) {
+				queue.EXPECT().Len().Return(0).AnyTimes()
+				queue.EXPECT().Clear()
+				base.EXPECT().LookAHead(gomock.Any(), gomock.Any()).Return(&LookAHeadResponse{
+					LookAheadMaxTime: upper.GetScheduledTime(),
+				}, nil)
+			},
+			wantResp: &LookAHeadResponse{
+				LookAheadMaxTime: upper.GetScheduledTime(),
+			},
+		},
+		{
+			// lastRangeID=-1, shard returns 0: 0 == -1+1 → same-host reacquisition, no fallback.
+			// Absence of queue.Clear() expectation proves no cache clear occurred.
+			name:        "rangeID changed by 1: same-host reacquisition, no fallback",
+			mode:        "enabled",
+			lastRangeID: -1,
+			initLower:   lower,
+			initUpper:   upper,
+			minKey:      lower,
+			setupMocks: func(base *MockQueueReader, queue *MockInMemQueue, _ *shard.MockContext) {
 				queue.EXPECT().Len().Return(0).AnyTimes()
 				queue.EXPECT().LookAHead(lower).Return(nil)
 			},
@@ -1312,7 +1394,8 @@ func TestCachedQueueReader_LookAHead(t *testing.T) {
 			})
 			base, queue := deps.mockBase, deps.mockQueue
 			setBounds(r, tc.initLower, tc.initUpper)
-			tc.setupMocks(base, queue)
+			r.lastRangeID = tc.lastRangeID
+			tc.setupMocks(base, queue, deps.mockShard)
 
 			resp, err := r.LookAHead(context.Background(), &LookAHeadRequest{InclusiveMinTaskKey: tc.minKey})
 
