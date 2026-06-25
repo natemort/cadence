@@ -1546,6 +1546,11 @@ func (s *IntegrationSuite) TestSignalWithStartWorkflow_IDReusePolicy() {
 	_, err := poller.PollAndProcessDecisionTask(false, false)
 	s.Logger.Info("PollAndProcessDecisionTask", tag.Error(err))
 	s.Nil(err)
+	// Run the activity instead of waiting for it to time out
+	err = poller.PollAndProcessActivityTask(false)
+	s.Logger.Info("PollAndProcessActivityTask", tag.Error(err))
+	s.Nil(err)
+
 	_, err = poller.PollAndProcessDecisionTask(false, false)
 	s.Logger.Info("PollAndProcessDecisionTask", tag.Error(err))
 	s.Nil(err)
