@@ -1408,7 +1408,8 @@ func (s *IntegrationSuite) TestQueryWorkflow_BeforeFirstDecision() {
 		RunID:      we.RunID,
 	}
 
-	ctx, cancel = createContext()
+	// This will wait until the context times out, so make it reasonably short
+	ctx, cancel = context.WithTimeout(s.T().Context(), 3*time.Second)
 	defer cancel()
 	// query workflow without any decision task should produce an error
 	_, err := s.Engine.QueryWorkflow(ctx, &types.QueryWorkflowRequest{
