@@ -1226,7 +1226,7 @@ func (s *IntegrationSuite) TestQueryWorkflow_Consistent_NewDecisionTask_Sticky()
 
 	// Make a request with stick tasklist to refresh the stickiness, otherwise we won't be able to add
 	// decisions to the sticky tasklist
-	ctx, cancel := createContext()
+	ctx, cancel := context.WithTimeout(s.T().Context(), time.Second*5)
 	defer cancel()
 	resp, err := poller.Engine.PollForDecisionTask(ctx, &types.PollForDecisionTaskRequest{
 		Domain:   poller.Domain,
