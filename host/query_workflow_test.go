@@ -121,7 +121,11 @@ func (s *IntegrationSuite) TestQueryWorkflow_Sticky() {
 
 	// Make a request with stick tasklist to refresh the stickiness, otherwise we won't be able to add
 	// decisions to the sticky tasklist
-	ctx, cancel := createContext()
+	// Matching rejects tasks for a sticky TaskList if it has never seen a poller before
+	// We need to do a "quick poll" so that it has seen us, and the only way to guarantee it observed the request
+	// is for this request to time out and receive no task in response. If we go shorter than 2s matching will reject
+	// this request.
+	ctx, cancel := context.WithTimeout(s.T().Context(), time.Second*5)
 	defer cancel()
 	resp, err := poller.Engine.PollForDecisionTask(ctx, &types.PollForDecisionTaskRequest{
 		Domain:   poller.Domain,
