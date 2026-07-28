@@ -25,8 +25,6 @@ package sqldriver
 import (
 	"context"
 	"database/sql"
-
-	"github.com/jmoiron/sqlx"
 )
 
 type (
@@ -35,11 +33,11 @@ type (
 	Driver interface {
 
 		// shared methods are for both non-transactional (using sqlx.DB) and transactional (using sqlx.Tx) operation --
-		// if a transaction is started(using BeginTxx), then query are executed in the transaction mode. Otherwise executed in normal mode.
+		// if a transaction is started(using BeginTransaction), then query are executed in the transaction mode. Otherwise executed in normal mode.
 		commonOfDbAndTx
 
-		// BeginTxx starts a new transaction in the shard of dbShardID
-		BeginTxx(ctx context.Context, dbShardID int, opts *sql.TxOptions) (*sqlx.Tx, error)
+		// BeginTransaction starts a new transaction in the shard of dbShardID
+		BeginTransaction(ctx context.Context, dbShardID int, opts *sql.TxOptions) (Driver, error)
 		// Commit commits the current transaction(started by BeginTxx)
 		Commit() error
 		// Rollback rollbacks the current transaction(started by BeginTxx)
@@ -55,6 +53,8 @@ type (
 		GetForSchemaQuery(dbShardID int, dest interface{}, query string, args ...interface{}) error
 	}
 
+	CloseFunc = func() error
+
 	// the methods can be executed from either a started or transaction(then need to call Commit/Rollback), or without a transaction
 	commonOfDbAndTx interface {
 		ExecContext(ctx context.Context, dbShardID int, query string, args ...interface{}) (sql.Result, error)
@@ -63,3 +63,7 @@ type (
 		SelectContext(ctx context.Context, dbShardID int, dest interface{}, query string, args ...interface{}) error
 	}
 )
+
+var NoopClose CloseFunc = func() error {
+	return nil
+}

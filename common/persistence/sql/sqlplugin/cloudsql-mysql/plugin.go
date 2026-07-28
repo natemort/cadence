@@ -1,3 +1,5 @@
+package cloudsql_mysql
+
 // Copyright (c) 2019 Uber Technologies, Inc.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -18,39 +20,42 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
 
-package mysql
-
 import (
 	"bytes"
-	"crypto/tls"
-	"crypto/x509"
 	"fmt"
-	"io/ioutil"
-	"net"
 	"net/url"
 	"strings"
+	"sync/atomic"
 
-	"github.com/go-sql-driver/mysql"
+	"cloud.google.com/go/cloudsqlconn"
+	cloudmysqldriver "cloud.google.com/go/cloudsqlconn/mysql/mysql"
 	"github.com/iancoleman/strcase"
 	"github.com/jmoiron/sqlx"
+	"go.uber.org/multierr"
 
 	"github.com/uber/cadence/common/config"
 	pt "github.com/uber/cadence/common/persistence/persistence-tests"
 	"github.com/uber/cadence/common/persistence/sql"
 	"github.com/uber/cadence/common/persistence/sql/sqldriver"
 	"github.com/uber/cadence/common/persistence/sql/sqlplugin"
+	mysqlplugin "github.com/uber/cadence/common/persistence/sql/sqlplugin/mysql"
 	"github.com/uber/cadence/environment"
 )
 
 const (
 	// PluginName is the name of the plugin
-	PluginName                   = "mysql"
-	dsnFmt                       = "%s:%s@%v(%v)/%s"
+	PluginName = "cloudsql-mysql"
+	// This is the same structure as regular MySQL but with different parameters
+	// my-user:mypass@cloudsql-mysql(my-proj:us-central1:my-inst)/my-db
+	// Notably:
+	// - The password is optional, and if you're using IAM auth you don't need it
+	// - cloudsql-mysql is the driver name rather than the connection protocol
+	// - the connection address is a CloudSQL instance rather than a host:port
+	dsnFmt                       = "%s@%v(%v)/%s"
 	isolationLevelAttrName       = "transaction_isolation"
 	isolationLevelAttrNameLegacy = "tx_isolation"
 	defaultIsolationLevel        = "'READ-COMMITTED'"
-	// customTLSName is the name used if a custom tls configuration is created
-	customTLSName = "tls-custom"
+	driverFormat                 = "cloudsql-mysql-%d"
 )
 
 var dsnAttrOverrides = map[string]string{
@@ -63,35 +68,61 @@ type plugin struct{}
 
 var _ sqlplugin.Plugin = (*plugin)(nil)
 
+var driverCounter atomic.Int32
+
 func init() {
 	sql.RegisterPlugin(PluginName, &plugin{})
 }
 
 // CreateDB initialize the DB object
 func (p *plugin) CreateDB(cfg *config.SQL) (sqlplugin.DB, error) {
-	return p.createDB(cfg)
+	return createDB(cfg)
 }
 
 // CreateAdminDB initialize the adminDb object
 func (p *plugin) CreateAdminDB(cfg *config.SQL) (sqlplugin.AdminDB, error) {
-	return p.createDB(cfg)
+	return createDB(cfg)
 }
 
-func (p *plugin) createDB(cfg *config.SQL) (*DB, error) {
-	driver, err := sqldriver.CreateDBConnections(cfg, p.createSingleDBConn, sqldriver.NoopClose)
+// The CloudSQL driver has a different lifecycle compared to typical database/sql connectors:
+// 1. We need to create and register the driver. There are many different options that can be specified for the driver
+// and these must be set at the time of registration. As a result, you can register the driver with whatever name you'd
+// like. If there are two different configurations we need to register two different drivers.
+// 2. We then can create connections as normal using sqlx.Connect. Like most connectors, the DSN syntax is very specific.
+// 3. When we're done with the conenctions we need to clean up the driver. It has background goroutines.
+//
+// To address this, when we create a new set of DB connections we use an incrementing identifier in the driver name
+// When that set of connections is closed we then close the driver.
+func createDB(cfg *config.SQL) (*mysqlplugin.DB, error) {
+	driverName := fmt.Sprintf(driverFormat, driverCounter.Add(1))
+	closeDriver, err := registerDriver(cfg, driverName)
 	if err != nil {
 		return nil, err
 	}
-	return NewDB(driver, cfg.NumShards, NewConverter()), nil
+
+	driver, err := sqldriver.CreateDBConnections(cfg, func(cfg *config.SQL) (*sqlx.DB, error) {
+		return createSingleDBConn(cfg, driverName)
+	}, closeDriver)
+	if err != nil {
+		multierr.AppendFunc(&err, closeDriver)
+		return nil, err
+	}
+	// Once we have a DB connection then everything is the same as MySQL.
+	return mysqlplugin.NewDB(driver, cfg.NumShards, mysqlplugin.NewConverter()), nil
 }
 
-func (p *plugin) createSingleDBConn(cfg *config.SQL) (*sqlx.DB, error) {
-	err := registerTLSConfig(cfg)
+func registerDriver(cfg *config.SQL, name string) (sqldriver.CloseFunc, error) {
+	// TODO: Construct options from the config
+	cleanup, err := cloudmysqldriver.RegisterDriver(name, cloudsqlconn.WithIAMAuthN(), cloudsqlconn.WithDefaultDialOptions(cloudsqlconn.WithPSC()))
 	if err != nil {
 		return nil, err
 	}
+	return cleanup, nil
+}
 
-	db, err := sqlx.Connect(PluginName, buildDSN(cfg))
+func createSingleDBConn(cfg *config.SQL, driverName string) (*sqlx.DB, error) {
+	// Can use either mysql or the DriverName, since the DSN also encodes the DriverName
+	db, err := sqlx.Connect(driverName, buildDSN(cfg, driverName))
 	if err != nil {
 		return nil, err
 	}
@@ -110,74 +141,13 @@ func (p *plugin) createSingleDBConn(cfg *config.SQL) (*sqlx.DB, error) {
 	return db, nil
 }
 
-func registerTLSConfig(cfg *config.SQL) error {
-	if cfg.TLS == nil || !cfg.TLS.Enabled {
-		return nil
-	}
-
-	host, _, err := net.SplitHostPort(cfg.ConnectAddr)
-	if err != nil {
-		return fmt.Errorf("error in host port from ConnectAddr: %v", err)
-	}
-
-	// TODO: create a way to set MinVersion and CipherSuites via cfg.
-	tlsConfig := &tls.Config{
-		ServerName:         host,
-		InsecureSkipVerify: !cfg.TLS.EnableHostVerification,
-	}
-
-	if cfg.TLS.CaFile != "" {
-		rootCertPool := x509.NewCertPool()
-		pem, err := ioutil.ReadFile(cfg.TLS.CaFile)
-		if err != nil {
-			return fmt.Errorf("failed to load CA files: %v", err)
-		}
-		if ok := rootCertPool.AppendCertsFromPEM(pem); !ok {
-			return fmt.Errorf("failed to append CA file")
-		}
-		tlsConfig.RootCAs = rootCertPool
-	}
-
-	if cfg.TLS.CertFile != "" && cfg.TLS.KeyFile != "" {
-		clientCert := make([]tls.Certificate, 0, 1)
-		certs, err := tls.LoadX509KeyPair(
-			cfg.TLS.CertFile,
-			cfg.TLS.KeyFile,
-		)
-		if err != nil {
-			return fmt.Errorf("failed to load tls x509 key pair: %v", err)
-		}
-		clientCert = append(clientCert, certs)
-		tlsConfig.Certificates = clientCert
-	}
-
-	// In order to use the TLS configuration you need to register it. Once registered you use it by specifying
-	// `tls` in the connect attributes.
-	err = mysql.RegisterTLSConfig(customTLSName, tlsConfig)
-	if err != nil {
-		return fmt.Errorf("failed to register tls config: %v", err)
-	}
-
-	if cfg.ConnectAttributes == nil {
-		cfg.ConnectAttributes = map[string]string{}
-	}
-
-	// If no `tls` connect attribute is provided then we override it to our newly registered tls config automatically.
-	// This allows users to simply provide a tls config without needing to remember to also set the connect attribute
-	if cfg.ConnectAttributes["tls"] == "" {
-		if cfg.TLS.SSLMode != "" {
-			cfg.ConnectAttributes["tls"] = cfg.TLS.SSLMode
-		} else {
-			cfg.ConnectAttributes["tls"] = customTLSName
-		}
-	}
-
-	return nil
-}
-
-func buildDSN(cfg *config.SQL) string {
+func buildDSN(cfg *config.SQL, driverName string) string {
 	attrs := buildDSNAttrs(cfg)
-	dsn := fmt.Sprintf(dsnFmt, cfg.User, cfg.Password, cfg.ConnectProtocol, cfg.ConnectAddr, cfg.DatabaseName)
+	userAndPassword := cfg.User
+	if cfg.Password != "" {
+		userAndPassword += ":" + cfg.Password
+	}
+	dsn := fmt.Sprintf(dsnFmt, userAndPassword, driverName, cfg.ConnectAddr, cfg.DatabaseName)
 	if attrs != "" {
 		dsn = dsn + "?" + attrs
 	}
@@ -241,16 +211,12 @@ const (
 
 // GetTestClusterOption return test options
 func GetTestClusterOption() (*pt.TestBaseOptions, error) {
-	port, err := environment.GetMySQLPort()
-	if err != nil {
-		return nil, err
-	}
 	return &pt.TestBaseOptions{
 		DBPluginName: PluginName,
 		DBUsername:   environment.GetMySQLUser(),
-		DBPassword:   environment.GetMySQLPassword(),
+		DBPassword:   "", // Assume IAM auth
 		DBHost:       environment.GetMySQLAddress(),
-		DBPort:       port,
+		DBPort:       -1,
 		SchemaDir:    testSchemaDir,
 		StoreType:    config.StoreTypeSQL,
 	}, nil

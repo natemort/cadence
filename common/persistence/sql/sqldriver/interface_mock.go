@@ -43,9 +43,9 @@ func (m *MockDriver) EXPECT() *MockDriverMockRecorder {
 }
 
 // BeginTxx mocks base method.
-func (m *MockDriver) BeginTxx(ctx context.Context, dbShardID int, opts *sql.TxOptions) (*sqlx.Tx, error) {
+func (m *MockDriver) BeginTransaction(ctx context.Context, dbShardID int, opts *sql.TxOptions) (*sqlx.Tx, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "BeginTxx", ctx, dbShardID, opts)
+	ret := m.ctrl.Call(m, "BeginTransaction", ctx, dbShardID, opts)
 	ret0, _ := ret[0].(*sqlx.Tx)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
@@ -54,7 +54,7 @@ func (m *MockDriver) BeginTxx(ctx context.Context, dbShardID int, opts *sql.TxOp
 // BeginTxx indicates an expected call of BeginTxx.
 func (mr *MockDriverMockRecorder) BeginTxx(ctx, dbShardID, opts any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "BeginTxx", reflect.TypeOf((*MockDriver)(nil).BeginTxx), ctx, dbShardID, opts)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "BeginTransaction", reflect.TypeOf((*MockDriver)(nil).BeginTransaction), ctx, dbShardID, opts)
 }
 
 // Close mocks base method.

@@ -1,0 +1,24 @@
+persistence:
+  defaultStore: mysql-default
+  visibilityStore: mysql-visibility
+  datastores:
+    mysql-default:
+      sql:
+        pluginName: "cloudsql-mysql"
+        databaseName: "cadence"
+        connectAddr: "cadence-dev-350535:us-west1:nate-cadence-cloudsq"
+        connectProtocol: "tcp"
+        user: "cadence-test-svc-account"
+        maxConns: 20
+        maxIdleConns: 20
+        maxConnLifetime: "1h"
+    mysql-visibility:
+      sql:
+        pluginName: "cloudsql-mysql"
+        databaseName: "cadence_visibility"
+        connectAddr: "cadence-dev-350535:us-west1:nate-cadence-cloudsq"
+        connectProtocol: "tcp"
+        user: "cadence-test-svc-account"
+        maxConns: 2
+        maxIdleConns: 2
+        maxConnLifetime: "1h"

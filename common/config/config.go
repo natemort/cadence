@@ -376,6 +376,10 @@ type (
 		MultipleDatabasesConfig []MultipleDatabasesConfigEntry `yaml:"multipleDatabasesConfig"`
 	}
 
+	GCPCloudSQL struct {
+		IPType string `yaml:"ipType"`
+	}
+
 	// MultipleDatabasesConfigEntry is an entry for MultipleDatabasesConfig to connect to a single SQL database
 	MultipleDatabasesConfigEntry struct {
 		// User is the username to be used for the conn
