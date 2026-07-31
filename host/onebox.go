@@ -92,7 +92,7 @@ type Cadence interface {
 	GetHistoryClient() historyClient.Client
 	GetMatchingClient() matchingClient.Client
 	GetMatchingClients() []matchingClient.Client
-	GetExecutionManagerFactory() persistence.ExecutionManagerFactory
+	GetExecutionManager() persistence.ExecutionManager
 }
 
 type (
@@ -112,7 +112,7 @@ type (
 		messagingClient               messaging.Client
 		domainManager                 persistence.DomainManager
 		historyV2Mgr                  persistence.HistoryManager
-		executionMgrFactory           persistence.ExecutionManagerFactory
+		executionMgr                  persistence.ExecutionManager
 		domainReplicationQueue        domain.ReplicationQueue
 		shutdownCh                    chan struct{}
 		shutdownWG                    sync.WaitGroup
@@ -312,7 +312,7 @@ type (
 		MessagingClient               messaging.Client
 		DomainManager                 persistence.DomainManager
 		HistoryV2Mgr                  persistence.HistoryManager
-		ExecutionMgrFactory           persistence.ExecutionManagerFactory
+		ExecutionMgr                  persistence.ExecutionManager
 		DomainReplicationQueue        domain.ReplicationQueue
 		Logger                        log.Logger
 		ZapLogger                     *zap.Logger
@@ -351,7 +351,7 @@ func NewCadence(params *CadenceParams) Cadence {
 		messagingClient:               params.MessagingClient,
 		domainManager:                 params.DomainManager,
 		historyV2Mgr:                  params.HistoryV2Mgr,
-		executionMgrFactory:           params.ExecutionMgrFactory,
+		executionMgr:                  params.ExecutionMgr,
 		domainReplicationQueue:        params.DomainReplicationQueue,
 		shutdownCh:                    make(chan struct{}),
 		clusterNo:                     params.ClusterNo,
@@ -1154,8 +1154,8 @@ func (c *cadenceImpl) createSystemDomain() error {
 	return nil
 }
 
-func (c *cadenceImpl) GetExecutionManagerFactory() persistence.ExecutionManagerFactory {
-	return c.executionMgrFactory
+func (c *cadenceImpl) GetExecutionManager() persistence.ExecutionManager {
+	return c.executionMgr
 }
 
 func (c *cadenceImpl) overrideHistoryDynamicConfig(client *dynamicClient) {
