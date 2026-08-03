@@ -939,6 +939,10 @@ func (q *cachedQueueReader) getTaskRangeID(taskID int64) int64 {
 //     for visibility only.
 //  4. Otherwise: cache and DB agreed.
 func (q *cachedQueueReader) reportShadowComparison(result findMismatchesInShadowResult, logTags []tag.Tag) {
+	// Metric emission must run before capping below: capping truncates the slices for
+	// logging, which would undercount the metric for large comparisons.
+	q.emitShadowMismatchMetrics(result)
+
 	// Cap the number of mismatched task keys logged to avoid excessively large logs.
 	result.NewRange = result.NewRange.cap()
 	result.CurrentRange = result.CurrentRange.cap()
@@ -955,6 +959,24 @@ func (q *cachedQueueReader) reportShadowComparison(result findMismatchesInShadow
 		q.logger.Info("potential non-critical mismatch between db and cache states", logTags...)
 	default:
 		q.logger.Debug("shadow comparison matched", logTags...)
+	}
+}
+
+// emitShadowMismatchMetrics records CachedQueueShadowMismatchCounter for both the current-range
+// and previous-range missed-task buckets, tagged by which bucket they came from so the two never
+// mix into one series. Skipped entirely when NewRange is non-empty: a stale shard owner makes the
+// whole comparison untrustworthy, not just the log severity.
+func (q *cachedQueueReader) emitShadowMismatchMetrics(result findMismatchesInShadowResult) {
+	if !result.NewRange.isEmpty() {
+		return
+	}
+	if len(result.CurrentRange.Missed) > 0 {
+		q.metrics.Tagged(metrics.Range("current")).
+			AddCounter(metrics.CachedQueueShadowMismatchCounter, int64(len(result.CurrentRange.Missed)))
+	}
+	if len(result.PreviousRange.Missed) > 0 {
+		q.metrics.Tagged(metrics.Range("previous")).
+			AddCounter(metrics.CachedQueueShadowMismatchCounter, int64(len(result.PreviousRange.Missed)))
 	}
 }
 
