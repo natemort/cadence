@@ -675,6 +675,7 @@ func (c *cadenceImpl) GetMatchingClients() []matchingClient.Client {
 
 func setOperationalDefaults(params *resource.Params) {
 	params.OperationalConfigStore = configstore.NewNopClient()
+	// OperationalDynamicConfig will be set after DynamicConfig is available
 	params.PercentageOnboarded = membership.StaticPercentageOnboarded(0)
 }
 
@@ -695,6 +696,16 @@ func (c *cadenceImpl) startFrontend(hosts map[string][]membership.HostInfo, star
 	params.ClusterMetadata = c.clusterMetadata
 	params.MessagingClient = c.messagingClient
 	params.DynamicConfig = newIntegrationConfigClient(c.dynamicClient, c.frontendDynCfgOverrides)
+	params.DynamicCollection = dynamicconfig.NewCollection(
+		params.DynamicConfig,
+		c.logger,
+		dynamicproperties.ClusterNameFilter(c.clusterMetadata.GetCurrentClusterName()),
+	)
+	params.OperationalDynamicConfig = dynamicconfig.NewCollection(
+		params.OperationalConfigStore,
+		c.logger,
+		dynamicproperties.ClusterNameFilter(c.clusterMetadata.GetCurrentClusterName()),
+	)
 	params.ArchivalMetadata = c.archiverMetadata
 	params.ArchiverProvider = c.archiverProvider
 	params.ESConfig = c.esConfig
@@ -782,6 +793,16 @@ func (c *cadenceImpl) startHistory(hosts map[string][]membership.HostInfo, start
 		integrationClient := newIntegrationConfigClient(c.dynamicClient, c.historyDynCfgOverrides)
 		c.overrideHistoryDynamicConfig(integrationClient)
 		params.DynamicConfig = integrationClient
+		params.DynamicCollection = dynamicconfig.NewCollection(
+			params.DynamicConfig,
+			c.logger,
+			dynamicproperties.ClusterNameFilter(c.clusterMetadata.GetCurrentClusterName()),
+		)
+		params.OperationalDynamicConfig = dynamicconfig.NewCollection(
+			params.OperationalConfigStore,
+			c.logger,
+			dynamicproperties.ClusterNameFilter(c.clusterMetadata.GetCurrentClusterName()),
+		)
 		params.PublicClient = newPublicClient(params.RPCFactory.GetDispatcher())
 		params.ArchivalMetadata = c.archiverMetadata
 		params.ArchiverProvider = c.archiverProvider
@@ -869,6 +890,16 @@ func (c *cadenceImpl) startMatching(hosts map[string][]membership.HostInfo, star
 		params.MembershipResolver = newMembershipResolver(params.Name, hosts, hostport)
 		params.ClusterMetadata = c.clusterMetadata
 		params.DynamicConfig = newIntegrationConfigClient(c.dynamicClient, c.matchingDynCfgOverrides)
+		params.DynamicCollection = dynamicconfig.NewCollection(
+			params.DynamicConfig,
+			c.logger,
+			dynamicproperties.ClusterNameFilter(c.clusterMetadata.GetCurrentClusterName()),
+		)
+		params.OperationalDynamicConfig = dynamicconfig.NewCollection(
+			params.OperationalConfigStore,
+			c.logger,
+			dynamicproperties.ClusterNameFilter(c.clusterMetadata.GetCurrentClusterName()),
+		)
 		params.ArchivalMetadata = c.archiverMetadata
 		params.ArchiverProvider = c.archiverProvider
 		params.GetIsolationGroups = getFromDynamicConfig(params)
@@ -942,6 +973,16 @@ func (c *cadenceImpl) startWorker(hosts map[string][]membership.HostInfo, startW
 	params.MembershipResolver = newMembershipResolver(params.Name, hosts, c.WorkerServiceHost())
 	params.ClusterMetadata = c.clusterMetadata
 	params.DynamicConfig = newIntegrationConfigClient(c.dynamicClient, c.workerDynCfgOverrides)
+	params.DynamicCollection = dynamicconfig.NewCollection(
+		params.DynamicConfig,
+		c.logger,
+		dynamicproperties.ClusterNameFilter(c.clusterMetadata.GetCurrentClusterName()),
+	)
+	params.OperationalDynamicConfig = dynamicconfig.NewCollection(
+		params.OperationalConfigStore,
+		c.logger,
+		dynamicproperties.ClusterNameFilter(c.clusterMetadata.GetCurrentClusterName()),
+	)
 	params.ArchivalMetadata = c.archiverMetadata
 	params.ArchiverProvider = c.archiverProvider
 	params.GetIsolationGroups = getFromDynamicConfig(params)

@@ -172,14 +172,24 @@ func TestStartStop(t *testing.T) {
 		RPCFactory:         rpcFac,
 		MembershipResolver: memberRes,
 		DynamicConfig:      dc,
-		TimeSource:         clock.NewRealTimeSource(),
-		PProfInitializer:   pprof,
+		DynamicCollection: dynamicconfig.NewCollection(
+			dc,
+			logger,
+			dynamicproperties.ClusterNameFilter(clusterMetadata.GetCurrentClusterName()),
+		),
+		TimeSource:       clock.NewRealTimeSource(),
+		PProfInitializer: pprof,
 		NewPersistenceBeanFn: func(persistenceClient.Factory, *persistenceClient.Params, *service.Config) (persistenceClient.Bean, error) {
 			return persistenceClientBean, nil
 		},
 		ArchiverProvider:           archiveProvider,
 		AsyncWorkflowQueueProvider: queue.NewMockProvider(ctrl),
 		OperationalConfigStore:     configstore.NewNopClient(),
+		OperationalDynamicConfig: dynamicconfig.NewCollection(
+			configstore.NewNopClient(),
+			logger,
+			dynamicproperties.ClusterNameFilter(clusterMetadata.GetCurrentClusterName()),
+		),
 	}
 
 	// bare minimum service config

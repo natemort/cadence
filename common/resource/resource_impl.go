@@ -172,11 +172,7 @@ func New(
 
 	ensureGetAllIsolationGroupsFnIsSet(params)
 
-	dynamicCollection := dynamicconfig.NewCollection(
-		params.DynamicConfig,
-		logger,
-		dynamicproperties.ClusterNameFilter(params.ClusterMetadata.GetCurrentClusterName()),
-	)
+	dynamicCollection := params.DynamicCollection
 	clientBean, err := client.NewClientBean(
 		client.NewRPCClientFactory(
 			params.RPCFactory,
@@ -322,11 +318,6 @@ func New(
 	}
 
 	isolationGroupStore := createConfigStoreOrDefault(params, dynamicCollection)
-	operationalDynamicConfig := dynamicconfig.NewCollection(
-		params.OperationalConfigStore,
-		logger,
-		dynamicproperties.ClusterNameFilter(params.ClusterMetadata.GetCurrentClusterName()),
-	)
 
 	isolationGroupState, err := ensureIsolationGroupStateHandlerOrDefault(
 		params,
@@ -408,7 +399,7 @@ func New(
 		isolationGroups:           isolationGroupState,
 		isolationGroupConfigStore: isolationGroupStore, // can be nil where persistence is not available
 		operationalConfigStore:    params.OperationalConfigStore,
-		operationalDynamicConfig:  operationalDynamicConfig,
+		operationalDynamicConfig:  params.OperationalDynamicConfig,
 
 		asyncWorkflowQueueProvider: params.AsyncWorkflowQueueProvider,
 
