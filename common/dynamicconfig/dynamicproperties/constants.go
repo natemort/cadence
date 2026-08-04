@@ -6145,6 +6145,10 @@ var ListKeys = map[ListKey]DynamicList{
 				"Add":   true,
 				"Match": "",
 			},
+			map[string]interface{}{ // config imports dynamicconfig, sadly
+				"Add":   false,
+				"Match": "^grpc-.*",
+			},
 		},
 	},
 }
