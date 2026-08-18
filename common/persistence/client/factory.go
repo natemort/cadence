@@ -598,8 +598,31 @@ func (f *factoryImpl) NewAdminDBs() ([]p.AdminDB, error) {
 		}
 		dbs = append(dbs, vDBs...)
 	}
-	// TODO: Support advanced visibility
-	// It doesn't have versioned schema support but we can do the setup
+	// Advanced visibility operates different from "regular" datastores:
+	// - They use a fixed datastore name based on the plugin
+	// - They may fallback to other stores, or be migrating between them, and that's implemented in the visibility store
+	//
+	// As a result, we just check whether the plugin is configured and include it. The user might have configured ES
+	// but not actually be using it, but we don't really have a way to tell.
+
+	esConfig, ok := f.config.DataStores[constants.ESVisibilityStoreName]
+	if ok && esConfig.ElasticSearch != nil {
+		db, dbErr := elasticsearch.NewAdminDB(esConfig.ElasticSearch, f.logger)
+		if dbErr != nil {
+			return nil, dbErr
+		}
+		dbs = append(dbs, db)
+	}
+	osConfig, ok := f.config.DataStores[constants.OSVisibilityStoreName]
+	// OS is secretly ElasticSearch
+	if ok && osConfig.ElasticSearch != nil {
+		db, dbErr := elasticsearch.NewAdminDB(osConfig.ElasticSearch, f.logger)
+		if dbErr != nil {
+			return nil, dbErr
+		}
+		dbs = append(dbs, db)
+	}
+	// TODO: Pinot support
 
 	return dbs, nil
 }
