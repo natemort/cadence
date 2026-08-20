@@ -306,7 +306,7 @@ func (s *TestBase) SetupDB(adminDB persistence.AdminDB) {
 	defer setup.Close()
 	alreadySetup, err := setup.IsSetup(s.T().Context())
 	if err != nil {
-		s.fatalOnError("Failed to check for DB", err)
+		s.fatalOnError(fmt.Sprintf("Failed to check for DB for: %s/%s", adminDB.PluginName(), adminDB.Identifier()), err)
 	}
 	// We might have multiple AdminDBs pointing to the same physical DB, that's okay
 	if !alreadySetup {
