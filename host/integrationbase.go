@@ -117,17 +117,10 @@ func (s *IntegrationBase) setupSuite() {
 	} else {
 		s.Logger.Info("Running integration test against test cluster")
 		clusterMetadata := NewClusterMetadata(s.T(), s.TestClusterConfig)
-		dc := persistence.DynamicConfiguration{
-			EnableSQLAsyncTransaction:                dynamicproperties.GetBoolPropertyFn(false),
-			EnableCassandraAllConsistencyLevelDelete: dynamicproperties.GetBoolPropertyFn(true),
-			EnableShardIDMetrics:                     dynamicproperties.GetBoolPropertyFn(true),
-			EnableHistoryTaskDualWriteMode:           dynamicproperties.GetBoolPropertyFn(true),
-			ReadNoSQLHistoryTaskFromDataBlob:         dynamicproperties.GetBoolPropertyFn(false),
-			SerializationEncoding:                    dynamicproperties.GetStringPropertyFn(string(constants.EncodingTypeThriftRW)),
-			ReadNoSQLShardFromDataBlob:               dynamicproperties.GetBoolPropertyFn(true),
-			HistoryNodeDeleteBatchSize:               dynamicproperties.GetIntPropertyFn(1000),
-			EnableWorkflowTimerTaskCleanup:           dynamicproperties.GetBoolPropertyFn(true),
-		}
+		dc := *persistence.NewDefaultDynamicConfiguration()
+		dc.EnableCassandraAllConsistencyLevelDelete = dynamicproperties.GetBoolPropertyFn(true)
+		dc.EnableHistoryTaskDualWriteMode = dynamicproperties.GetBoolPropertyFn(true)
+		dc.EnableWorkflowTimerTaskCleanup = dynamicproperties.GetBoolPropertyFn(true)
 		params := pt.TestBaseParams{
 			PersistenceConfig:    s.PersistenceConfig,
 			ClusterMetadata:      clusterMetadata,
