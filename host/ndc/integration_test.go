@@ -100,15 +100,9 @@ func (s *NDCIntegrationTestSuite) SetupSuite() {
 	s.clusterConfigs[0].MockAdminClient = s.mockAdminClient
 
 	clusterMetadata := host.NewClusterMetadata(s.T(), s.clusterConfigs[0])
-	dc := persistence.DynamicConfiguration{
-		EnableSQLAsyncTransaction:                dynamicproperties.GetBoolPropertyFn(false),
-		EnableCassandraAllConsistencyLevelDelete: dynamicproperties.GetBoolPropertyFn(true),
-		EnableHistoryTaskDualWriteMode:           dynamicproperties.GetBoolPropertyFn(true),
-		ReadNoSQLHistoryTaskFromDataBlob:         dynamicproperties.GetBoolPropertyFn(false),
-		SerializationEncoding:                    dynamicproperties.GetStringPropertyFn(string(constants.EncodingTypeThriftRW)),
-		ReadNoSQLShardFromDataBlob:               dynamicproperties.GetBoolPropertyFn(true),
-		HistoryNodeDeleteBatchSize:               dynamicproperties.GetIntPropertyFn(1000),
-	}
+	dc := *persistence.NewDefaultDynamicConfiguration()
+	dc.EnableCassandraAllConsistencyLevelDelete = dynamicproperties.GetBoolPropertyFn(true)
+	dc.EnableHistoryTaskDualWriteMode = dynamicproperties.GetBoolPropertyFn(true)
 	params := pt.TestBaseParams{
 		PersistenceConfig:    s.persistenceConfig,
 		ClusterMetadata:      clusterMetadata,

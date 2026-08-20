@@ -153,18 +153,10 @@ func NewTestBaseWithNoSQL(t *testing.T, options *TestBaseOptions) *TestBase {
 	if metadata.GetCurrentClusterName() == "" {
 		metadata = cluster.GetTestClusterMetadata(false)
 	}
-	dc := persistence.DynamicConfiguration{
-		EnableSQLAsyncTransaction:                dynamicproperties.GetBoolPropertyFn(false),
-		EnableCassandraAllConsistencyLevelDelete: dynamicproperties.GetBoolPropertyFn(true),
-		EnableShardIDMetrics:                     dynamicproperties.GetBoolPropertyFn(true),
-		EnableHistoryTaskDualWriteMode:           dynamicproperties.GetBoolPropertyFn(true),
-		ReadNoSQLHistoryTaskFromDataBlob:         dynamicproperties.GetBoolPropertyFn(false),
-		SerializationEncoding:                    dynamicproperties.GetStringPropertyFn(string(constants.EncodingTypeThriftRW)),
-		ReadNoSQLShardFromDataBlob:               dynamicproperties.GetBoolPropertyFn(true),
-		DomainAuditLogTTL:                        func(domainID string) time.Duration { return time.Hour * 24 * 365 }, // 1 year default
-		HistoryNodeDeleteBatchSize:               dynamicproperties.GetIntPropertyFn(1000),
-		EnableWorkflowTimerTaskCleanup:           dynamicproperties.GetBoolPropertyFn(true),
-	}
+	dc := *persistence.NewDefaultDynamicConfiguration()
+	dc.EnableCassandraAllConsistencyLevelDelete = dynamicproperties.GetBoolPropertyFn(true)
+	dc.EnableHistoryTaskDualWriteMode = dynamicproperties.GetBoolPropertyFn(true)
+	dc.EnableWorkflowTimerTaskCleanup = dynamicproperties.GetBoolPropertyFn(true)
 	params := TestBaseParams{
 		PersistenceConfig:    testClusterCfg,
 		ClusterMetadata:      metadata,
@@ -186,18 +178,10 @@ func NewTestBaseWithSQL(t *testing.T, options *TestBaseOptions) *TestBase {
 	if metadata.GetCurrentClusterName() == "" {
 		metadata = cluster.GetTestClusterMetadata(false)
 	}
-	dc := persistence.DynamicConfiguration{
-		EnableSQLAsyncTransaction:                dynamicproperties.GetBoolPropertyFn(false),
-		EnableCassandraAllConsistencyLevelDelete: dynamicproperties.GetBoolPropertyFn(true),
-		EnableShardIDMetrics:                     dynamicproperties.GetBoolPropertyFn(true),
-		EnableHistoryTaskDualWriteMode:           dynamicproperties.GetBoolPropertyFn(true),
-		ReadNoSQLHistoryTaskFromDataBlob:         dynamicproperties.GetBoolPropertyFn(false),
-		SerializationEncoding:                    dynamicproperties.GetStringPropertyFn(string(constants.EncodingTypeThriftRW)),
-		ReadNoSQLShardFromDataBlob:               dynamicproperties.GetBoolPropertyFn(true),
-		DomainAuditLogTTL:                        func(domainID string) time.Duration { return time.Hour * 24 * 365 }, // 1 year default
-		HistoryNodeDeleteBatchSize:               dynamicproperties.GetIntPropertyFn(1000),
-		EnableWorkflowTimerTaskCleanup:           dynamicproperties.GetBoolPropertyFn(false),
-	}
+	dc := *persistence.NewDefaultDynamicConfiguration()
+	dc.EnableCassandraAllConsistencyLevelDelete = dynamicproperties.GetBoolPropertyFn(true)
+	dc.EnableHistoryTaskDualWriteMode = dynamicproperties.GetBoolPropertyFn(true)
+	// EnableWorkflowTimerTaskCleanup is false by default
 	params := TestBaseParams{
 		PersistenceConfig:    testConfig,
 		ClusterMetadata:      metadata,
