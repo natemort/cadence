@@ -22,6 +22,7 @@ package cloudsqlmysql
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"net/url"
@@ -30,6 +31,7 @@ import (
 
 	"cloud.google.com/go/cloudsqlconn"
 	cloudmysqldriver "cloud.google.com/go/cloudsqlconn/mysql/mysql"
+	"cloud.google.com/go/compute/metadata"
 	"github.com/iancoleman/strcase"
 	"github.com/jmoiron/sqlx"
 	"go.uber.org/multierr"
@@ -176,8 +178,12 @@ func getDialOptions(cfg *config.SQL) (cloudsqlconn.DialOption, error) {
 }
 
 func createSingleDBConn(cfg *config.SQL, driverName string) (*sqlx.DB, error) {
+	dsn, err := buildDSN(cfg, driverName)
+	if err != nil {
+		return nil, err
+	}
 	// Can use either mysql or the DriverName, since the DSN also encodes the DriverName
-	db, err := sqlx.Connect(driverName, buildDSN(cfg, driverName))
+	db, err := sqlx.Connect(driverName, dsn)
 	if err != nil {
 		return nil, err
 	}
@@ -196,9 +202,16 @@ func createSingleDBConn(cfg *config.SQL, driverName string) (*sqlx.DB, error) {
 	return db, nil
 }
 
-func buildDSN(cfg *config.SQL, driverName string) string {
+func buildDSN(cfg *config.SQL, driverName string) (string, error) {
 	attrs := buildDSNAttrs(cfg)
 	userAndPassword := cfg.User
+	if userAndPassword == "" {
+		serviceAccount, err := getServiceAccountUsername()
+		if err != nil {
+			return "", err
+		}
+		userAndPassword = serviceAccount
+	}
 	if cfg.Password != "" {
 		userAndPassword += ":" + cfg.Password
 	}
@@ -206,7 +219,28 @@ func buildDSN(cfg *config.SQL, driverName string) string {
 	if attrs != "" {
 		dsn = dsn + "?" + attrs
 	}
-	return dsn
+	return dsn, nil
+}
+
+// Indirection to allow tests to stub out the GCE metadata server.
+var (
+	onGCE           = metadata.OnGCE
+	getMetadataUser = metadata.EmailWithContext
+)
+
+func getServiceAccountUsername() (string, error) {
+	if !onGCE() {
+		return "", errors.New("missing User")
+	}
+	serviceAccountEmail, err := getMetadataUser(context.Background(), "default")
+	if err != nil {
+		return "", err
+	}
+	username, _, _ := strings.Cut(serviceAccountEmail, "@")
+	if username == "" {
+		return "", errors.New("missing User")
+	}
+	return username, nil
 }
 
 func buildDSNAttrs(cfg *config.SQL) string {

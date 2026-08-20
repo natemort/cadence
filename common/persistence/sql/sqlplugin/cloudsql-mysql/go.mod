@@ -13,6 +13,7 @@ replace github.com/uber/cadence => ../../../../..
 
 require (
 	cloud.google.com/go/cloudsqlconn v1.18.0
+	cloud.google.com/go/compute/metadata v0.9.0
 	github.com/iancoleman/strcase v0.3.0
 	github.com/jmoiron/sqlx v1.2.1-0.20200615141059-0794cb1f47ee
 	github.com/stretchr/testify v1.11.1
@@ -23,7 +24,6 @@ require (
 require (
 	cloud.google.com/go/auth v0.16.4 // indirect
 	cloud.google.com/go/auth/oauth2adapt v0.2.8 // indirect
-	cloud.google.com/go/compute/metadata v0.9.0 // indirect
 	filippo.io/edwards25519 v1.1.0 // indirect
 	github.com/BurntSushi/toml v1.4.1-0.20240526193622-a339e1f7089c // indirect
 	github.com/VividCortex/mysqlerr v1.0.0 // indirect
