@@ -39,6 +39,7 @@ import (
 	"github.com/uber/cadence/common"
 	"github.com/uber/cadence/common/archiver"
 	"github.com/uber/cadence/common/archiver/provider"
+	"github.com/uber/cadence/common/cluster"
 	"github.com/uber/cadence/common/config"
 	"github.com/uber/cadence/common/dynamicconfig"
 	"github.com/uber/cadence/common/dynamicconfig/configstore"
@@ -92,7 +93,11 @@ func (s *ServerSuite) TestServerStartup() {
 	}
 
 	// set up sqlite persistence layer and apply schema to sqlite db
-	testBase := pt.NewTestBaseWithSQL(s.T(), sqlite.GetTestClusterOption())
+	metadata := cluster.GetTestClusterMetadata(true)
+	testBase := pt.NewTestBase(s.T(), pt.TestBaseParams{
+		PersistenceConfig: pt.SimplePersistenceConfig(s.T(), sqlite.GetTestConfig),
+		ClusterMetadata:   &metadata,
+	})
 	cfg.Persistence = testBase.PersistenceConfig
 	testBase.Setup()
 

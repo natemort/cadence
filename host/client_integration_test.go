@@ -71,7 +71,7 @@ func TestClientIntegrationSuite(t *testing.T) {
 	if err != nil {
 		panic(err)
 	}
-	testCluster := NewPersistenceTestCluster(t, clusterConfig)
+	testCluster := NewTestPersistenceConfig(t)
 
 	s := new(ClientIntegrationSuite)
 	params := IntegrationBaseParams{
