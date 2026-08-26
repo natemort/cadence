@@ -20,7 +20,7 @@
 // THE SOFTWARE.
 
 // Generate rate limiter wrappers.
-//go:generate mockgen -package $GOPACKAGE -destination data_manager_interfaces_mock.go github.com/uber/cadence/common/persistence Task,ShardManager,ExecutionManager,TaskManager,HistoryManager,DomainManager,DomainAuditManager,SemaphoreMetadataManager,SemaphoreTokenManager,HistoryTaskDLQManager,QueueManager,ConfigStoreManager
+//go:generate mockgen -package $GOPACKAGE -destination data_manager_interfaces_mock.go github.com/uber/cadence/common/persistence Task,ShardManager,ExecutionManager,TaskManager,HistoryManager,DomainManager,DomainAuditManager,SemaphoreMetadataManager,SemaphoreTaskManager,SemaphoreTokenManager,HistoryTaskDLQManager,QueueManager,ConfigStoreManager
 //go:generate gowrap gen -g -p . -i ConfigStoreManager -t ./wrappers/templates/ratelimited.tmpl -o wrappers/ratelimited/configstore_generated.go
 //go:generate gowrap gen -g -p . -i DomainManager -t ./wrappers/templates/ratelimited.tmpl -o wrappers/ratelimited/domain_generated.go
 //go:generate gowrap gen -g -p . -i HistoryManager -t ./wrappers/templates/ratelimited.tmpl -o wrappers/ratelimited/history_generated.go
@@ -1571,6 +1571,120 @@ type (
 		NextPageToken []byte
 	}
 
+	// SemaphoreTask is one queued acquire waiting for a token, in a semaphore bucket's FIFO queue.
+	SemaphoreTask struct {
+		TaskID     int64
+		WorkflowID string
+		RunID      string
+		HoldID     int64
+		// AcquireDeadline is nil when the task has no deadline (never skipped, no expiry).
+		AcquireDeadline *time.Time
+		CreatedTime     time.Time
+	}
+
+	// ClaimSemaphoreTaskBucketRequest claims (or renews) single-writer ownership of a bucket by
+	// bumping the control row's range_id. It creates the control row if the bucket is new.
+	ClaimSemaphoreTaskBucketRequest struct {
+		DomainID      string
+		SemaphoreName string
+		Bucket        int
+		// RangeID is the range_id the caller believes it currently holds. Zero means the caller
+		// holds nothing and is taking the bucket from whoever has it. A non-zero value that no
+		// longer matches the control row returns ConditionFailedError instead of taking it back,
+		// which is how an owner that has already lost the bucket finds out.
+		RangeID int64
+	}
+
+	// ClaimSemaphoreTaskBucketResponse returns the bucket's fence and cursor after the claim.
+	ClaimSemaphoreTaskBucketResponse struct {
+		RangeID  int64
+		AckLevel int64
+	}
+
+	// GetSemaphoreTaskBucketStateRequest reads a bucket's control row.
+	GetSemaphoreTaskBucketStateRequest struct {
+		DomainID      string
+		SemaphoreName string
+		Bucket        int
+	}
+
+	// GetSemaphoreTaskBucketStateResponse is the response for GetSemaphoreTaskBucketState.
+	GetSemaphoreTaskBucketStateResponse struct {
+		RangeID  int64
+		AckLevel int64
+	}
+
+	// UpdateSemaphoreTaskBucketStateRequest advances the ack_level cursor, fenced by the current RangeID.
+	UpdateSemaphoreTaskBucketStateRequest struct {
+		DomainID      string
+		SemaphoreName string
+		Bucket        int
+		RangeID       int64
+		AckLevel      int64
+	}
+
+	// UpdateSemaphoreTaskBucketStateResponse is the response for UpdateSemaphoreTaskBucketState.
+	UpdateSemaphoreTaskBucketStateResponse struct{}
+
+	// CreateSemaphoreTasksRequest enqueues task rows, fenced by the bucket's RangeID.
+	CreateSemaphoreTasksRequest struct {
+		DomainID      string
+		SemaphoreName string
+		Bucket        int
+		RangeID       int64
+		Tasks         []*SemaphoreTask
+	}
+
+	// CreateSemaphoreTasksResponse is the response for CreateSemaphoreTasks.
+	CreateSemaphoreTasksResponse struct{}
+
+	// GetSemaphoreTasksRequest reads task rows in (ReadLevel, MaxReadLevel].
+	GetSemaphoreTasksRequest struct {
+		DomainID      string
+		SemaphoreName string
+		Bucket        int
+		// ReadLevel is the exclusive lower bound (typically the ack_level).
+		ReadLevel int64
+		// MaxReadLevel is the inclusive upper bound.
+		MaxReadLevel int64
+		BatchSize    int
+	}
+
+	// GetSemaphoreTasksResponse is the response for GetSemaphoreTasks.
+	GetSemaphoreTasksResponse struct {
+		Tasks []*SemaphoreTask
+	}
+
+	// RangeCompleteSemaphoreTasksRequest range-deletes granted/expired tasks in (ReadLevel, AckLevel].
+	RangeCompleteSemaphoreTasksRequest struct {
+		DomainID      string
+		SemaphoreName string
+		Bucket        int
+		// ReadLevel is the exclusive lower bound of the delete range.
+		ReadLevel int64
+		// AckLevel is the inclusive upper bound of the delete range.
+		AckLevel int64
+	}
+
+	// RangeCompleteSemaphoreTasksResponse reports how many rows were deleted, or
+	// UnknownNumRowsAffected when the backend cannot report it.
+	RangeCompleteSemaphoreTasksResponse struct {
+		RowsDeleted int
+	}
+
+	// GetSemaphoreTasksCountRequest counts task rows with task_id > ReadLevel.
+	GetSemaphoreTasksCountRequest struct {
+		DomainID      string
+		SemaphoreName string
+		Bucket        int
+		ReadLevel     int64
+	}
+
+	// GetSemaphoreTasksCountResponse is the response for GetSemaphoreTasksCount.
+	GetSemaphoreTasksCountResponse struct {
+		Count int64
+	}
+
 	// MutableStateStats is the size stats for MutableState
 	MutableStateStats struct {
 		// Total size of mutable state
@@ -1984,6 +2098,19 @@ type (
 		GetSemaphoreOwnershipByOwner(ctx context.Context, request *GetSemaphoreOwnershipByOwnerRequest) (*GetSemaphoreOwnershipByOwnerResponse, error)
 		// ScanSemaphoreBucket scans a bucket partition (both row kinds), paginated.
 		ScanSemaphoreBucket(ctx context.Context, request *ScanSemaphoreBucketRequest) (*ScanSemaphoreBucketResponse, error)
+	}
+
+	// SemaphoreTaskManager manages a distributed semaphore's per-bucket FIFO task queue.
+	SemaphoreTaskManager interface {
+		Closeable
+		GetName() string
+		ClaimSemaphoreTaskBucket(ctx context.Context, request *ClaimSemaphoreTaskBucketRequest) (*ClaimSemaphoreTaskBucketResponse, error)
+		GetSemaphoreTaskBucketState(ctx context.Context, request *GetSemaphoreTaskBucketStateRequest) (*GetSemaphoreTaskBucketStateResponse, error)
+		UpdateSemaphoreTaskBucketState(ctx context.Context, request *UpdateSemaphoreTaskBucketStateRequest) (*UpdateSemaphoreTaskBucketStateResponse, error)
+		CreateSemaphoreTasks(ctx context.Context, request *CreateSemaphoreTasksRequest) (*CreateSemaphoreTasksResponse, error)
+		GetSemaphoreTasks(ctx context.Context, request *GetSemaphoreTasksRequest) (*GetSemaphoreTasksResponse, error)
+		RangeCompleteSemaphoreTasks(ctx context.Context, request *RangeCompleteSemaphoreTasksRequest) (*RangeCompleteSemaphoreTasksResponse, error)
+		GetSemaphoreTasksCount(ctx context.Context, request *GetSemaphoreTasksCountRequest) (*GetSemaphoreTasksCountResponse, error)
 	}
 
 	// HistoryTaskDLQManager is the manager-level interface for the history task DLQ.
