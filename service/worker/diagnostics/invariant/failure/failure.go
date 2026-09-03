@@ -57,6 +57,17 @@ func (f *failure) Check(ctx context.Context, params invariant.InvariantCheckInpu
 					Metadata:      invariant.MarshalData(FailureIssuesMetadata{Identity: identity}),
 				})
 				issueID++
+			} else if *reason == common.FailureReasonHistorySizeExceedsLimit {
+				result = append(result, invariant.InvariantCheckResult{
+					IssueID:       issueID,
+					InvariantType: WorkflowFailed.String(),
+					Reason:        HistorySizeExceedsLimit.String(),
+					Metadata: invariant.MarshalData(FailureIssuesMetadata{
+						Identity:      identity,
+						FailedEventID: event.ID,
+					}),
+				})
+				issueID++
 			} else {
 				result = append(result, invariant.InvariantCheckResult{
 					IssueID:       issueID,
@@ -169,6 +180,12 @@ func (f *failure) RootCause(ctx context.Context, params invariant.InvariantRootC
 			result = append(result, invariant.InvariantRootCauseResult{
 				IssueID:   issue.IssueID,
 				RootCause: invariant.RootCauseTypeServiceSideCustomError,
+				Metadata:  issue.Metadata,
+			})
+		case HistorySizeExceedsLimit.String():
+			result = append(result, invariant.InvariantRootCauseResult{
+				IssueID:   issue.IssueID,
+				RootCause: invariant.RootCauseTypeHistorySizeExceedsLimit,
 				Metadata:  issue.Metadata,
 			})
 		}
