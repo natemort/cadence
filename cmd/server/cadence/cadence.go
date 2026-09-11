@@ -65,6 +65,7 @@ const (
 	flagServices    = "services"
 	flagAutoSetup   = "auto-setup"
 	flagSetupOption = "setup-option"
+	flagConfigFile  = "config-file"
 
 	envAutoSetup   = "CADENCE_AUTO_SETUP"
 	envSetupOption = "CADENCE_SETUP_OPTION"
@@ -105,6 +106,11 @@ func BuildCLI(releaseVersion string, gitRevision string) *cli.App {
 			EnvVars: []string{config.EnvKeyConfigDir},
 		},
 		&cli.StringFlag{
+			Name:    flagConfigFile,
+			Usage:   "config file path is a path relative to root, or an absolute path. If specified, this will override the config dir and env flags for determining the file to load.",
+			EnvVars: []string{config.EnvKeyConfigFile},
+		},
+		&cli.StringFlag{
 			Name:    flagEnv,
 			Aliases: []string{"e"},
 			Value:   "development",
@@ -131,6 +137,7 @@ func BuildCLI(releaseVersion string, gitRevision string) *cli.App {
 					Aliases: []string{"s"},
 					Value:   strings.Join(defaultServices, ","),
 					Usage:   "list of services to start",
+					EnvVars: []string{"CADENCE_SERVICES", "SERVICES"},
 				},
 				&cli.BoolFlag{
 					Name:    flagAutoSetup,
@@ -158,13 +165,10 @@ func BuildCLI(releaseVersion string, gitRevision string) *cli.App {
 				}
 
 				appCtx := appContext{
-					CfgContext: config.Context{
-						Environment: getEnvironment(c),
-						Zone:        getZone(c),
-					},
-					ConfigDir: getConfigDir(c),
-					RootDir:   getRootDir(c),
-					HostName:  host,
+					ConfigFiles: getConfigFiles(c),
+					ConfigDir:   getConfigDir(c),
+					RootDir:     getRootDir(c),
+					HostName:    host,
 				}
 
 				services := getServices(c)
@@ -205,12 +209,10 @@ func BuildCLI(releaseVersion string, gitRevision string) *cli.App {
 }
 
 func setupSchema(c *cli.Context) error {
-	configDir := getConfigDir(c)
-	env := getEnvironment(c)
-	zone := getZone(c)
+	configFiles := getConfigFiles(c)
 
 	var cfg config.Config
-	if err := config.Load(env, configDir, zone, &cfg); err != nil {
+	if err := config.Load(configFiles, &cfg); err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
 	if err := cfg.ValidateAndFillDefaults(); err != nil {
@@ -295,10 +297,27 @@ func runServices(services []string, appBuilder func(serviceName string) fxAppInt
 type appContext struct {
 	fx.Out
 
-	CfgContext config.Context
-	ConfigDir  string `name:"config-dir"`
-	RootDir    string `name:"root-dir"`
-	HostName   string `name:"hostname"`
+	ConfigFiles config.FileSet
+	ConfigDir   string `name:"config-dir"`
+	RootDir     string `name:"root-dir"`
+	HostName    string `name:"hostname"`
+}
+
+func getConfigFiles(c *cli.Context) config.FileSet {
+	override, ok := getOverrideConfigFile(c)
+	if ok {
+		return config.SingletonFileSet(override)
+	}
+	return config.HierarchicalFileSet(getConfigDir(c), getEnvironment(c), getZone(c))
+}
+
+func getOverrideConfigFile(c *cli.Context) (string, bool) {
+	overrideConfigFile := strings.TrimSpace(c.String(flagConfigFile))
+	if overrideConfigFile == "" {
+		return "", false
+	}
+
+	return constructPathIfNeed(getRootDir(c), overrideConfigFile), true
 }
 
 func getEnvironment(c *cli.Context) string {

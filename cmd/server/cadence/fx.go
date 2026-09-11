@@ -93,7 +93,6 @@ type AppParams struct {
 	fx.In
 
 	Service                  string `name:"service"`
-	AppContext               config.Context
 	Config                   config.Config
 	Logger                   log.Logger
 	ZapLogger                *zap.Logger
@@ -136,7 +135,6 @@ func NewApp(params AppParams) *App {
 // It is done implicitly, since it provides methods Start and Stop which are picked up by fx.
 type App struct {
 	cfg                      config.Config
-	rootDir                  string
 	logger                   log.Logger
 	zapLogger                *zap.Logger
 	dynamicConfig            dynamicconfig.Client

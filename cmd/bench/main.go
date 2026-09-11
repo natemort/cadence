@@ -57,7 +57,7 @@ func startHandler(c *cli.Context) error {
 	log.Printf("Loading config; env=%v,zone=%v,configDir=%v\n", env, zone, configDir)
 
 	var cfg lib.Config
-	if err := config.Load(env, configDir, zone, &cfg); err != nil {
+	if err := config.Load(config.HierarchicalFileSet(configDir, env, zone), &cfg); err != nil {
 		return fmt.Errorf("failed to load config file: %w", err)
 	}
 

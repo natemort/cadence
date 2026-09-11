@@ -87,7 +87,7 @@ func (s *ServerSuite) TestServerStartup() {
 	s.T().Logf("Loading config; env=%v,zone=%v,configDir=%v\n", env, zone, configDir)
 
 	var cfg config.Config
-	err := config.Load(env, configDir, zone, &cfg)
+	err := config.Load(config.HierarchicalFileSet(configDir, env, zone), &cfg)
 	if err != nil {
 		s.logger.Fatal("Config file corrupted.", tag.Error(err))
 	}

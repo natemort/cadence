@@ -105,7 +105,7 @@ func (b *clientFactory) ServerConfig(c *cli.Context) (*config.Config, error) {
 	configDir := c.String(FlagServiceConfigDir)
 
 	var cfg config.Config
-	err := config.Load(env, configDir, zone, &cfg)
+	err := config.Load(config.HierarchicalFileSet(configDir, env, zone), &cfg)
 	if err != nil {
 		return nil, commoncli.Problem(
 			fmt.Sprintf(

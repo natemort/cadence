@@ -34,12 +34,9 @@ import (
 func TestFxDependencies(t *testing.T) {
 	err := fx.ValidateApp(_commonModule,
 		fx.Supply(appContext{
-			CfgContext: config.Context{
-				Environment: "",
-				Zone:        "",
-			},
-			ConfigDir: "",
-			RootDir:   "",
+			ConfigFiles: config.HierarchicalFileSet("config", "", ""),
+			ConfigDir:   "",
+			RootDir:     "",
 		}),
 		Module(""))
 	require.NoError(t, err)

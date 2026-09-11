@@ -24,6 +24,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -35,6 +36,7 @@ import (
 	"go.uber.org/fx"
 	"go.uber.org/fx/fxtest"
 
+	"github.com/uber/cadence/common/config"
 	"github.com/uber/cadence/tools/common/flag"
 )
 
@@ -359,4 +361,121 @@ func TestGetSetupOptions(t *testing.T) {
 			assert.Equal(t, tt.want, got)
 		})
 	}
+}
+
+func TestGetConfigFiles(t *testing.T) {
+	type result struct {
+		item1 string
+		item2 string
+	}
+	type testConfig struct {
+		Items struct {
+			Item1 string `yaml:"item1"`
+			Item2 string `yaml:"item2"`
+		} `yaml:"items"`
+	}
+
+	configContent := `
+items:
+  item1: val1
+  item2: val2`
+
+	overrideContent := `
+items:
+  item1: override1
+  item2: override2`
+
+	tests := []struct {
+		name string
+		args []string
+		want result
+	}{
+		{
+			name: "no config-file flag uses hierarchical",
+			args: []string{"app"},
+			want: result{item1: "val1", item2: "val2"},
+		},
+		{
+			name: "config-file with absolute path uses singleton",
+			args: []string{"app", "--config-file", "ABSOLUTE_OVERRIDE"},
+			want: result{item1: "override1", item2: "override2"},
+		},
+		{
+			name: "config-file with relative path resolves against root",
+			args: []string{"app", "--config-file", "override.yaml"},
+			want: result{item1: "override1", item2: "override2"},
+		},
+		{
+			name: "empty config-file falls back to hierarchical",
+			args: []string{"app", "--config-file", "  "},
+			want: result{item1: "val1", item2: "val2"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+
+			// Write base.yaml for hierarchical loading
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "base.yaml"), []byte(configContent), 0644))
+
+			// Write override file for singleton loading
+			overridePath := filepath.Join(dir, "override.yaml")
+			require.NoError(t, os.WriteFile(overridePath, []byte(overrideContent), 0644))
+
+			// Replace placeholder with actual absolute path
+			args := make([]string, len(tt.args))
+			copy(args, tt.args)
+			for i, a := range args {
+				if a == "ABSOLUTE_OVERRIDE" {
+					args[i] = overridePath
+				}
+			}
+
+			var fileSet config.FileSet
+			app := &cli.App{
+				Flags: []cli.Flag{
+					&cli.StringFlag{Name: flagRoot, Value: dir},
+					&cli.StringFlag{Name: flagConfig, Value: dir},
+					&cli.StringFlag{Name: flagConfigFile},
+					&cli.StringFlag{Name: flagEnv, Value: "development"},
+					&cli.StringFlag{Name: flagZone},
+				},
+				Action: func(c *cli.Context) error {
+					fileSet = getConfigFiles(c)
+					return nil
+				},
+			}
+			require.NoError(t, app.Run(args))
+
+			var cfg testConfig
+			require.NoError(t, config.Load(fileSet, &cfg))
+			assert.Equal(t, tt.want.item1, cfg.Items.Item1)
+			assert.Equal(t, tt.want.item2, cfg.Items.Item2)
+		})
+	}
+}
+
+func TestGetConfigFileSingleton_MissingFile(t *testing.T) {
+	var fileSet config.FileSet
+	app := &cli.App{
+		Flags: []cli.Flag{
+			&cli.StringFlag{Name: flagRoot, Value: "."},
+			&cli.StringFlag{Name: flagConfig, Value: "config"},
+			&cli.StringFlag{Name: flagConfigFile},
+			&cli.StringFlag{Name: flagEnv, Value: "development"},
+			&cli.StringFlag{Name: flagZone},
+		},
+		Action: func(c *cli.Context) error {
+			fileSet = getConfigFiles(c)
+			return nil
+		},
+	}
+	require.NoError(t, app.Run([]string{"app", "--config-file", "/nonexistent/config.yaml"}))
+
+	type empty struct{}
+	var cfg empty
+	err := config.Load(fileSet, &cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "does not exist")
 }

@@ -67,7 +67,7 @@ items:
 	for _, env := range envs {
 		for _, zone := range zones {
 			var cfg testConfig
-			err := Load(env, dir, zone, &cfg)
+			err := Load(HierarchicalFileSet(dir, env, zone), &cfg)
 			s.Nil(err)
 			s.Equal("base1", cfg.Items.Item1)
 			s.Equal("base2", cfg.Items.Item2)
@@ -115,7 +115,7 @@ items:
 
 	for _, tc := range testCases {
 		var cfg testConfig
-		err := Load(tc.env, dir, tc.zone, &cfg)
+		err := Load(HierarchicalFileSet(dir, tc.env, tc.zone), &cfg)
 		s.Nil(err)
 		s.Equal(tc.item1, cfg.Items.Item1)
 		s.Equal(tc.item2, cfg.Items.Item2)
@@ -124,8 +124,30 @@ items:
 
 func (s *LoaderSuite) TestInvalidPath() {
 	var cfg testConfig
-	err := Load("prod", "", "", &cfg)
+	err := Load(HierarchicalFileSet("", "prod", ""), &cfg)
 	s.NotNil(err)
+}
+
+func (s *LoaderSuite) TestSingletonFileSet() {
+	dir := s.T().TempDir()
+
+	s.createFile(dir, "config.yaml", `
+items:
+  item1: single1
+  item2: single2`)
+
+	var cfg testConfig
+	err := Load(SingletonFileSet(path(dir, "config.yaml")), &cfg)
+	s.Nil(err)
+	s.Equal("single1", cfg.Items.Item1)
+	s.Equal("single2", cfg.Items.Item2)
+}
+
+func (s *LoaderSuite) TestSingletonFileSetMissing() {
+	var cfg testConfig
+	err := Load(SingletonFileSet("/nonexistent/config.yaml"), &cfg)
+	s.NotNil(err)
+	s.Contains(err.Error(), "does not exist")
 }
 
 func (s *LoaderSuite) createFile(dir string, file string, content string) {
