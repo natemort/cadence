@@ -229,7 +229,7 @@ func setupSchema(c *cli.Context) error {
 	err := schema.Update(c.Context, schema.Options{
 		ClusterName:    cfg.ClusterGroupMetadata.CurrentClusterName,
 		Config:         &cfg.Persistence,
-		ConnectTimeout: 30 * time.Second,
+		ConnectTimeout: 90 * time.Second,
 		SetupOptions:   setupOptions,
 		DefaultDomain:  defaultDomain,
 	})
