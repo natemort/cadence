@@ -2616,8 +2616,8 @@ const (
 
 	RingResolverError
 
-	// WorkflowExecutionHistoryAccess tracks the access to the workflow history
-	WorkflowExecutionHistoryAccess
+	// WorkflowQueryAgeDays records the age in days of queried closed workflow executions as a histogram.
+	WorkflowQueryAgeDays
 
 	// Budget manager metrics
 	BudgetManagerCapacityBytes
@@ -3606,7 +3606,7 @@ var MetricDefs = map[ServiceIdx]map[MetricIdx]metricDefinition{
 
 		RingResolverError: {metricName: "ring_resolver_error", metricType: Counter},
 
-		WorkflowExecutionHistoryAccess: {metricName: "workflow_execution_history_access", metricType: Gauge},
+		WorkflowQueryAgeDays: {metricName: "workflow_query_age_days", metricType: Histogram, buckets: WorkflowAgeDaysBuckets},
 
 		// Budget manager metrics
 		BudgetManagerCapacityBytes:    {metricName: "budget_manager_capacity_bytes", metricType: Gauge},
@@ -4361,6 +4361,9 @@ var ResponsePayloadSizeBuckets = append(
 	tally.ValueBuckets{0},                                 // need an explicit 0 or zero is reported as 1
 	tally.MustMakeExponentialValueBuckets(1024, 2, 20)..., // 1kB..1GB
 )
+
+// WorkflowAgeDaysBuckets contains day-granularity buckets (0 through 31) for tracking queried workflow age
+var WorkflowAgeDaysBuckets = tally.MustMakeLinearValueBuckets(0, 1, 32)
 
 // ExponentialDurationBuckets is a set of exponential duration buckets
 var ExponentialDurationBuckets = func() tally.DurationBuckets {
