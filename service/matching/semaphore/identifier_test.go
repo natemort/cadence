@@ -5,6 +5,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/zap"
 )
 
 // Tests that NewIdentifier rejects the values persistence would reject anyway, so a
@@ -50,6 +51,18 @@ func TestNewIdentifier(t *testing.T) {
 	}
 }
 
+// Tests that the ring key separates the buckets of one semaphore. If they shared a key they
+// would all hash to one host, and splitting the semaphore into buckets would gain nothing.
+func TestRingKey(t *testing.T) {
+	first, err := NewIdentifier("domain-1", "sem-1", 0)
+	require.NoError(t, err)
+	second, err := NewIdentifier("domain-1", "sem-1", 1)
+	require.NoError(t, err)
+
+	assert.Equal(t, "domain-1_sem-1_0", first.RingKey())
+	assert.NotEqual(t, first.RingKey(), second.RingKey())
+}
+
 // Tests that Identifier works as a map key. Buckets are looked up by value, so the struct has to
 // stay comparable -- adding a slice or map field would break this at compile time, which is the
 // point.
@@ -64,4 +77,17 @@ func TestIdentifierIsUsableAsAMapKey(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "first", buckets[same])
 	assert.Len(t, buckets, 2)
+}
+
+// Tests that a bucket logs as separate fields rather than one joined string, which is what lets
+// a log query select a whole semaphore instead of only an exact bucket.
+func TestLogTags(t *testing.T) {
+	id, err := NewIdentifier("domain-1", "sem-1", 2)
+	require.NoError(t, err)
+
+	got := id.LogTags()
+	require.Len(t, got, 3)
+	assert.Equal(t, zap.String("wf-domain-id", "domain-1"), got[0].Field())
+	assert.Equal(t, zap.String("semaphore-name", "sem-1"), got[1].Field())
+	assert.Equal(t, zap.Int("semaphore-bucket", 2), got[2].Field())
 }

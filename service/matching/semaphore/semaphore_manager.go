@@ -6,18 +6,20 @@ import (
 	"fmt"
 	"math/rand"
 	"sync"
+	"time"
 
+	"github.com/uber/cadence/common/clock"
 	"github.com/uber/cadence/common/log"
 	"github.com/uber/cadence/common/log/tag"
 	"github.com/uber/cadence/common/persistence"
 	"github.com/uber/cadence/common/types"
+	"github.com/uber/cadence/service/matching/liveness"
 )
 
 const (
-	// scanPageSize sizes one page of the startup scan. A full bucket is one token row per slot
-	// plus one owner row per hold, so 2*bucket_size covers the partition, and the +1 saves the
-	// empty second fetch an exactly-full page would cost. Paging runs to the end either way, so
-	// this only ever costs round trips.
+	// scanPageSize is one larger than a full bucket -- one token row per slot plus one owner row
+	// per hold -- so the startup scan takes a single round trip. An optimization only: paging
+	// runs to the end whatever the size.
 	scanPageSize = 2*persistence.MaxSemaphoreBucketSize + 1
 
 	// maxGrantAttempts caps how many slots one acquire tries, so a badly stale free-set cannot
@@ -84,27 +86,32 @@ const (
 
 var _ Manager = (*semaphoreManagerImpl)(nil)
 
-// Single semaphore bucket in memory state
+// semaphoreManagerImpl serves one semaphore bucket from this host.
 type semaphoreManagerImpl struct {
 	id     Identifier
 	tokens persistence.SemaphoreTokenManager
 	logger log.Logger
 
-	// startupDoneCh is closed when startup ends, whatever the outcome, and Acquire waits on it.
-	// startupOnce keeps the close to one, since closing twice panics.
-	startupDoneCh chan struct{}
-	startupOnce   sync.Once
+	// onStopFn unregisters this manager, so a stopped one is never handed out again.
+	onStopFn func(Manager)
+	// liveness unloads the bucket once it has gone IdleTTL without serving a request.
+	liveness *liveness.Liveness
 
-	// mu guards the state below, never held across a persistence call: concurrent acquires
-	// for one owner must race to the conditional write.
+	// startupDoneCh is closed when startup ends. Start and Acquire both wait on it
+	startupDoneCh chan struct{}
+	// startupOnce keeps the close to one, since closing twice panics.
+	startupOnce sync.Once
+	// stopOnce runs the teardown once; a second caller blocks until it has finished.
+	stopOnce sync.Once
+
+	// mu guards the state below, never held across a persistence call
 	mu sync.Mutex
-	// state is the manager's lifecycle stage; Acquire serves only while it is running. Guarded
-	// by mu rather than an atomic so Start can check it and install its scan result in one step,
-	// or a Stop landing mid-load would be lost.
+	// state is the manager's lifecycle stage. Guarded by mu rather than an atomic so the load
+	// checks for a Stop and installs the scan result as one step.
 	state managerState
 	// freeList holds the ids of available tokens
-	// freeIndex maps an id back to its position in freeList.
-	freeList  []int
+	freeList []int
+	// freeIndex maps an id back to its position in freeList
 	freeIndex map[int]int
 	// held is the owner_id -> token_id reverse index, mirroring the partition's owner rows.
 	held map[string]int
@@ -113,7 +120,15 @@ type semaphoreManagerImpl struct {
 type ManagerParams struct {
 	ID     Identifier
 	Tokens persistence.SemaphoreTokenManager
+	// Tagged with the bucket's identity here, so an already-tagged logger duplicates fields.
 	Logger log.Logger
+
+	// IdleTTL is how long the manager may go without a request before it unloads itself.
+	IdleTTL time.Duration
+	// OnStopFn is called once from Stop to unregister this manager.
+	// It must not call Stop and must tolerate a manager that is already unregistered.
+	OnStopFn   func(Manager)
+	TimeSource clock.TimeSource
 }
 
 func validateParams(p ManagerParams) error {
@@ -126,23 +141,40 @@ func validateParams(p ManagerParams) error {
 	if p.Logger == nil {
 		return fmt.Errorf("%w: ManagerParams.Logger is required", ErrInvalidRequest)
 	}
+	// Rejected rather than passed through: liveness builds a ticker from this and a
+	// non-positive interval panics, which would take the host down on a bad config value.
+	if p.IdleTTL <= 0 {
+		return fmt.Errorf("%w: ManagerParams.IdleTTL must be positive", ErrInvalidRequest)
+	}
+	if p.OnStopFn == nil {
+		return fmt.Errorf("%w: ManagerParams.OnStopFn is required", ErrInvalidRequest)
+	}
+	if p.TimeSource == nil {
+		return fmt.Errorf("%w: ManagerParams.TimeSource is required", ErrInvalidRequest)
+	}
 	return nil
 }
 
-// NewManager builds the manager for one bucket. Call Start before Acquire, and discard it if
-// Start returns an error.
+// NewManager builds the manager for one bucket, call Start before Acquire.
 func NewManager(p ManagerParams) (Manager, error) {
 	if err := validateParams(p); err != nil {
 		return nil, err
 	}
-	return &semaphoreManagerImpl{
+	m := &semaphoreManagerImpl{
 		id:            p.ID,
 		tokens:        p.Tokens,
-		logger:        p.Logger.WithTags(tag.Dynamic("semaphore-bucket", p.ID.String())),
+		logger:        p.Logger.WithTags(p.ID.LogTags()...),
+		onStopFn:      p.OnStopFn,
 		startupDoneCh: make(chan struct{}),
 		freeIndex:     make(map[int]int),
 		held:          make(map[string]int),
-	}, nil
+	}
+	m.liveness = liveness.NewLiveness(p.TimeSource, p.IdleTTL, func() {
+		m.logger.Info("Semaphore manager unloading after no recent requests",
+			tag.Dynamic("idle-ttl", p.IdleTTL))
+		m.Stop()
+	})
+	return m, nil
 }
 
 // Identifier names the bucket this manager serves.
@@ -150,31 +182,63 @@ func (m *semaphoreManagerImpl) Identifier() Identifier {
 	return m.id
 }
 
-// markStartupDone closes startupDoneCh, which is what lets a blocked Acquire go on. It says
-// startup ended, not that it succeeded, so Stop calls it too: an acquire on a manager that never
-// started gets ErrNotReady rather than blocking forever.
+// markStartupDone releases everything waiting on startup. It means startup ended, not that it
+// succeeded, so Stop calls it too rather than leave callers blocked on a load that never ran.
 func (m *semaphoreManagerImpl) markStartupDone() {
 	m.startupOnce.Do(func() { close(m.startupDoneCh) })
 }
 
-// Start scans the partition and builds the free-set and the reverse index from what
-// is stored there. Call it exactly once, and discard the Manager if it returns an error.
+// Start builds the free-set and the reverse index by scanning the partition.
 func (m *semaphoreManagerImpl) Start(ctx context.Context) error {
-	// Move to starting before the scan so a second Start fails here.
 	m.mu.Lock()
-	if m.state != managerStateCreated {
-		m.mu.Unlock()
-		return fmt.Errorf("semaphore manager %v has already been started or stopped", m.id)
+	found := m.state
+	if found == managerStateCreated {
+		m.state = managerStateStarting
 	}
-	m.state = managerStateStarting
 	m.mu.Unlock()
 
-	// Registered after the check, so a rejected second Start cannot close startupDoneCh.
-	// Closing it mid-scan makes Acquire answer ErrNotReady for a bucket that is still loading.
+	switch found {
+	case managerStateCreated:
+		return m.load(ctx)
+	case managerStateStarting:
+		// A load is already in flight over the same partition, so wait for it.
+		return m.awaitStartup(ctx)
+	case managerStateRunning:
+		return nil
+	default:
+		return ErrNotReady
+	}
+}
+
+// awaitStartup blocks until the startup load has ended and reports whether it left the bucket
+// usable.
+func (m *semaphoreManagerImpl) awaitStartup(ctx context.Context) error {
+	select {
+	case <-m.startupDoneCh:
+		// Startup is over. Whether it left the bucket usable is the isRunning check below.
+	case <-ctx.Done():
+		// The caller's deadline expired while startup was still running. Returning here keeps
+		// a slow scan from holding every caller past the deadline it asked for.
+		return ctx.Err()
+	}
+	if !m.isRunning() {
+		return ErrNotReady
+	}
+	return nil
+}
+
+// load runs the startup scan and installs what it read.
+func (m *semaphoreManagerImpl) load(ctx context.Context) error {
+	// Deferred, so startup ends however this returns and no caller is left waiting. Ending it
+	// any earlier would answer ErrNotReady for a bucket that is still loading.
 	defer m.markStartupDone()
+
+	m.logger.Info("Semaphore manager starting", tag.LifeCycleStarting)
 
 	freeList, freeIndex, held, err := m.loadTokenOwnership(ctx)
 	if err != nil {
+		// Stop unregisters, so the next request builds a fresh manager and scans again.
+		m.Stop()
 		return fmt.Errorf("load semaphore bucket %v: %w", m.id, err)
 	}
 
@@ -183,13 +247,15 @@ func (m *semaphoreManagerImpl) Start(ctx context.Context) error {
 		m.mu.Unlock()
 		// Stop landed during the scan, so this host no longer owns the bucket and the scan
 		// result is already stale.
-		return fmt.Errorf("semaphore manager %v was stopped while it was loading", m.id)
+		return fmt.Errorf("%w: semaphore manager %v was stopped while it was loading", ErrNotReady, m.id)
 	}
 	m.freeList, m.freeIndex, m.held = freeList, freeIndex, held
 	m.state = managerStateRunning
-	// Counted under the lock: the assignment above aliases the locals into the manager, so
-	// reading their length after the unlock would race a concurrent grant.
 	freeSlots, heldSlots := len(m.freeList), len(m.held)
+	// Armed here, not earlier or later. Earlier, the idle clock would run during the scan, so a
+	// slow load could unload the bucket before its first request. Later, outside the lock, a
+	// concurrent Stop could finish first and leave the idle clock running with nothing to stop it.
+	m.liveness.Start()
 	m.mu.Unlock()
 
 	m.logger.Info("Semaphore manager started",
@@ -200,14 +266,22 @@ func (m *semaphoreManagerImpl) Start(ctx context.Context) error {
 	return nil
 }
 
-// Stop gives up the bucket: later acquires get ErrNotReady. A grant
+// Stop shuts the manager down: later acquires get ErrNotReady. A grant
 // already past the state check still finishes its write.
 func (m *semaphoreManagerImpl) Stop() {
-	m.mu.Lock()
-	m.state = managerStateStopped
-	m.mu.Unlock()
-	m.markStartupDone()
-	m.logger.Info("Semaphore manager stopped", tag.LifeCycleStopped)
+	m.stopOnce.Do(func() {
+		m.mu.Lock()
+		m.state = managerStateStopped
+		m.mu.Unlock()
+
+		// Unregistered before the rest of the teardown, so nothing is handed a manager that can
+		// no longer serve.
+		m.onStopFn(m)
+		m.liveness.Stop()
+
+		m.markStartupDone()
+		m.logger.Info("Semaphore manager stopped", tag.LifeCycleStopped)
+	})
 }
 
 func (m *semaphoreManagerImpl) isRunning() bool {
@@ -222,19 +296,14 @@ func (m *semaphoreManagerImpl) Acquire(ctx context.Context, ownerID string) (Acq
 	if ownerID == "" {
 		return AcquireResult{}, fmt.Errorf("%w: ownerID is required", ErrInvalidRequest)
 	}
+	// Marked before the startup wait, so a bucket whose first request arrives during a slow
+	// scan is not counted as idle the moment it finishes loading.
+	m.liveness.MarkAlive()
 
 	// Wait for startup to finish before reading any state, since the free-set is empty until
 	// the scan fills it.
-	select {
-	case <-m.startupDoneCh:
-		// Startup is over. Whether it left the bucket usable is the isRunning check below.
-	case <-ctx.Done():
-		// The caller's deadline expired while startup was still running. Returning here keeps
-		// a slow scan from holding every acquire past the deadline it asked for.
-		return AcquireResult{}, ctx.Err()
-	}
-	if !m.isRunning() {
-		return AcquireResult{}, ErrNotReady
+	if err := m.awaitStartup(ctx); err != nil {
+		return AcquireResult{}, err
 	}
 
 	res, err := m.grant(ctx, ownerID)

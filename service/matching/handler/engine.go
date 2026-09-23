@@ -57,6 +57,7 @@ import (
 	"github.com/uber/cadence/common/types"
 	"github.com/uber/cadence/service/matching/config"
 	"github.com/uber/cadence/service/matching/event"
+	"github.com/uber/cadence/service/matching/semaphore"
 	"github.com/uber/cadence/service/matching/tasklist"
 )
 
@@ -91,6 +92,8 @@ type (
 	matchingEngineImpl struct {
 		taskListCreationLock           sync.Mutex
 		taskListRegistry               tasklist.TaskListRegistry
+		semaphoreRegistry              semaphore.SemaphoreRegistry
+		semaphoreTokenManager          persistence.SemaphoreTokenManager
 		shutdownCompletion             *sync.WaitGroup
 		shutdown                       chan struct{}
 		taskManager                    persistence.TaskManager
@@ -126,6 +129,21 @@ var (
 	_stickyPollerUnavailableError = &types.StickyWorkerUnavailableError{Message: "sticky worker is unavailable, please use non-sticky task list."}
 )
 
+// semaphoreManagerStartTimeout bounds a bucket's startup scan as a whole. Each query underneath
+// already has the Cassandra client's own timeout, so this is the backstop for a scan that keeps
+// paging.
+//
+// Not the caller's context: a client with a short deadline would abort the scan, and the next
+// request would start over from the first page, so a busy bucket under impatient callers might
+// never finish loading. Acquire honours the caller's deadline on its own while it waits for
+// startup, so keeping the two apart costs the caller nothing.
+const semaphoreManagerStartTimeout = 30 * time.Second
+
+// ErrSemaphoreDisabled means the domain has distributed semaphores turned off. It is terminal,
+// unlike semaphore.ErrNotReady, which means "still starting, come back": nothing will change
+// here until an operator flips the flag.
+var ErrSemaphoreDisabled = errors.New("distributed semaphore is not enabled for this domain")
+
 var _ Engine = (*matchingEngineImpl)(nil) // Asserts that interface is indeed implemented
 
 // NewEngine creates an instance of matching engine
@@ -150,6 +168,7 @@ func NewEngine(
 ) Engine {
 	e := &matchingEngineImpl{
 		taskListRegistry:               tasklist.NewTaskListRegistry(metricsClient),
+		semaphoreRegistry:              semaphore.NewSemaphoreRegistry(),
 		shutdown:                       make(chan struct{}),
 		shutdownCompletion:             &sync.WaitGroup{},
 		taskManager:                    taskManager,
@@ -191,6 +210,10 @@ func (e *matchingEngineImpl) Stop() {
 	// Executes Stop() on each task list outside of lock
 	for _, l := range e.taskListRegistry.AllManagers() {
 		l.Stop()
+	}
+	// Same for semaphore buckets, outside the lock.
+	for _, mgr := range e.semaphoreRegistry.AllManagers() {
+		mgr.Stop()
 	}
 	e.unregisterDomainFailoverCallback()
 	e.shutdownCompletion.Wait()
@@ -371,6 +394,59 @@ func (e *matchingEngineImpl) getOrCreateTaskListManager(ctx context.Context, tas
 		EventName: "TaskListManager Started",
 		Host:      e.config.HostName,
 	})
+	return mgr, nil
+}
+
+// getOrCreateSemaphoreManager returns this host's manager for one bucket, started and ready to
+// serve, building it the first time the bucket is asked for.
+func (e *matchingEngineImpl) getOrCreateSemaphoreManager(id semaphore.Identifier) (semaphore.Manager, error) {
+	// Fast path: almost every request finds a manager already loaded, and skips the domain
+	// lookup and the ring check below.
+	mgr, ok := e.semaphoreRegistry.ManagerByIdentifier(id)
+	if !ok {
+		// The flag filters on domain name while a bucket is keyed by domain id, so resolve the
+		// name first. Both stay out of create, which holds the registry lock.
+		domainName, err := e.domainCache.GetDomainName(id.DomainID)
+		if err != nil {
+			return nil, err
+		}
+		if !e.config.EnableDistributedSemaphore(domainName) {
+			return nil, ErrSemaphoreDisabled
+		}
+
+		if err := e.errIfSemaphoreOwnershipLost(id); err != nil {
+			return nil, err
+		}
+
+		// One manager per bucket, whoever gets here first. It is registered before it starts, so
+		// a request arriving mid-scan reuses this one rather than scanning the same bucket again.
+		mgr, err = e.semaphoreRegistry.GetOrCreate(id, func() (semaphore.Manager, error) {
+			return semaphore.NewManager(semaphore.ManagerParams{
+				ID:         id,
+				Tokens:     e.semaphoreTokenManager,
+				Logger:     e.logger,
+				IdleTTL:    e.config.SemaphoreIdleTime(domainName),
+				OnStopFn:   e.unregisterSemaphoreManager,
+				TimeSource: e.timeSource,
+			})
+		})
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	// Start is called whether this request built the manager or found one already registered. It
+	// costs nothing for one already running, and waits for one still loading. Calling it on a
+	// manager someone else registered is insurance: a manager that never gets started cannot
+	// recover on its own, since its acquires block on a load nobody is running and the idle timer
+	// that would discard it is only started by that load. A failed load unregisters itself.
+	startCtx, cancel := context.WithTimeout(context.Background(), semaphoreManagerStartTimeout)
+	defer cancel()
+	if err := mgr.Start(startCtx); err != nil {
+		e.logger.Error("Semaphore manager failed to start",
+			append(id.LogTags(), tag.LifeCycleStartFailed, tag.Error(err))...)
+		return nil, err
+	}
 	return mgr, nil
 }
 
@@ -1229,6 +1305,21 @@ func (e *matchingEngineImpl) unloadTaskList(tlMgr tasklist.Manager) {
 	}
 }
 
+// unregisterSemaphoreManager is what a manager calls as it stops, so a stopped bucket is not
+// handed to the next request. Often the second call for that manager, since unloadSemaphoreManager
+// unregisters before stopping; Unregister does nothing the second time, and leaves a replacement
+// alone.
+func (e *matchingEngineImpl) unregisterSemaphoreManager(semMgr semaphore.Manager) {
+	e.semaphoreRegistry.Unregister(semMgr)
+}
+
+func (e *matchingEngineImpl) unloadSemaphoreManager(semMgr semaphore.Manager) {
+	unregistered := e.semaphoreRegistry.Unregister(semMgr)
+	if unregistered {
+		semMgr.Stop()
+	}
+}
+
 // Populate the decision task response based on context and scheduled/started events.
 func (e *matchingEngineImpl) createPollForDecisionTaskResponse(
 	task *tasklist.InternalTask,
@@ -1524,6 +1615,36 @@ func (e *matchingEngineImpl) errIfShardOwnershipLost(ctx context.Context, taskLi
 		return newNotOwnedByHostError(taskListOwner.Identity())
 	}
 
+	return nil
+}
+
+// errIfSemaphoreOwnershipLost reports an error unless the ring puts this bucket on this host.
+//
+// Two hosts serving one bucket is safe -- neither holds a lease, and the conditional write
+// decides every grant -- but it is wasteful, because each one keeps a free-set that the other
+// keeps invalidating. Routing every bucket to one host keeps both caches worth having.
+func (e *matchingEngineImpl) errIfSemaphoreOwnershipLost(id semaphore.Identifier) error {
+	self, err := e.membershipResolver.WhoAmI()
+	if err != nil {
+		return fmt.Errorf("failed to look up self in membership: %w", err)
+	}
+
+	if e.isShuttingDown() {
+		e.logger.Warn("Rejecting a semaphore request because the engine is shutting down",
+			id.LogTags()...)
+		// No host to name: this one is going away and the ring has not settled on the next.
+		return cadence_errors.NewSemaphoreNotOwnedByHostError("not known", self.Identity(), id.String())
+	}
+
+	owner, err := e.membershipResolver.Lookup(service.Matching, id.RingKey())
+	if err != nil {
+		return fmt.Errorf("failed to look up the owner of semaphore bucket %v: %w", id, err)
+	}
+	if owner.Identity() != self.Identity() {
+		e.logger.Warn("Rejecting a semaphore request because this host does not own the bucket",
+			append(id.LogTags(), tag.Dynamic("owned-by", owner.Identity()))...)
+		return cadence_errors.NewSemaphoreNotOwnedByHostError(owner.Identity(), self.Identity(), id.String())
+	}
 	return nil
 }
 
